@@ -52,6 +52,21 @@
    RETURN safe
 
 /*--------------------------------------------------------------------*/
+/* shellSafeStrict — restrictive sanitisation for general use          */
+/* Only allows: alphanumeric, space, underscore, hyphen, dot          */
+/* Use this for user-sourced content outside Fossil CLI context.      */
+/*--------------------------------------------------------------------*/
+::METHOD shellSafeStrict CLASS
+   USE ARG input
+   safe = ''
+   allowed = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _-.'
+   DO i = 1 TO LENGTH(input)
+      c = SUBSTR(input, i, 1)
+      IF POS(c, allowed) > 0 THEN safe = safe || c
+   END
+   RETURN safe
+
+/*--------------------------------------------------------------------*/
 /* safeTmpFile — generate a collision-resistant temp file path          */
 /* Requires mktemp (POSIX). Fails fast if unavailable.                */
 /*--------------------------------------------------------------------*/

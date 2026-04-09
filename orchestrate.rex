@@ -202,6 +202,22 @@ DO p = 1 TO projectSections~items
       IF LEFT(agentWorkDir, 1) = '~' THEN
          agentWorkDir = VALUE('HOME',, 'ENVIRONMENT') || SUBSTR(agentWorkDir, 2)
 
+      /* Input validation: reject path traversal and unknown runtimes */
+      IF POS('..', agentWorkDir) > 0 THEN DO
+         SAY '[SECURITY] Agent' agentName 'has ".." in working_dir. Skipping.'
+         ITERATE
+      END
+      agentScript = .TomlParser~get(ac, 'script', '')
+      IF agentScript \= '' & POS('..', agentScript) > 0 THEN DO
+         SAY '[SECURITY] Agent' agentName 'has ".." in script path. Skipping.'
+         ITERATE
+      END
+      knownRuntimes = 'claude claude-code mistral mistral-vibe gemini gemini-cli trinity script bash rexx oorexx mcp-bridge'
+      IF WORDPOS(agentRuntime, knownRuntimes) = 0 THEN DO
+         SAY '[SECURITY] Agent' agentName 'has unknown runtime "'agentRuntime'". Skipping.'
+         ITERATE
+      END
+
       /* Static eligibility checks */
       IF agentProjects \= '' & WORDPOS(projCode, agentProjects) = 0 THEN ITERATE
       agentSpent = mutex~readAgentSpend(agentName)
