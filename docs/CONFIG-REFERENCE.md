@@ -74,6 +74,17 @@ max_iterations = 5                   # Ralph loop iterations per ticket
 log_dir = "runs"                     # run log directory (unversioned)
 ```
 
+## CLI Flags
+
+```bash
+rexx orchestrate.rex [company.toml] [--dry-run] [--preflight]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--preflight` | Verify all agent runtimes (binary availability), API keys, script paths, and working directories. Exits with error count as return code. Run this after setup or config changes. |
+| `--dry-run` | Run full candidate discovery, wave scheduling, prompt building, and budget checks. Prints the dispatch plan without executing adapters or spending money. Claimed tickets are released back to open. |
+
 ## agents/<n>.toml
 
 ```toml
@@ -96,8 +107,13 @@ projects = ["myplugin", "otherplugin"]  # which projects this agent works on
 allowed_paths = ["includes/", "tests/"]
 forbidden_paths = ["vendor/", ".git/", "config/production.php"]
 
+# --- Permissions ---
+skip_permissions = false             # if true, passes --dangerously-skip-permissions to Claude Code
+                                     # only enable for trusted high-privilege agents
+
 # --- Trigger ---
 trigger = "ticket"                   # ticket (default) | after:<agent> | always | manual | cron:<expr>
+                                     # cron supports: *, ranges (1-5), lists (1,3,5), steps (*/5, 1-10/2)
 
 # --- Error Recovery & Retry (v2) ---
 fallback_adapters = ["gemini-cli", "mistral-vibe"]  # ordered adapter cascade on failure

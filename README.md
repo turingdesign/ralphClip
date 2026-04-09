@@ -62,10 +62,16 @@ fossil wiki commit "Goals/G001" < my-first-goal.md
 # 5. Create your first epic ticket
 fossil ticket add type=epic title="Build the thing" goal_id=G001 assignee=cto status=open
 
-# 6. Run the orchestrator
+# 6. Verify your setup
+rexx /path/to/ralphclip/orchestrate.rex --preflight
+
+# 7. Preview what would run (no agents dispatched, no money spent)
+rexx /path/to/ralphclip/orchestrate.rex --dry-run
+
+# 8. Run the orchestrator
 rexx /path/to/ralphclip/orchestrate.rex
 
-# 7. Open the dashboard
+# 9. Open the dashboard
 fossil ui
 ```
 
@@ -104,6 +110,18 @@ my-company/
 - [Creating ooRexx Agents](docs/CREATING-AGENTS.md) — write your own analysis agents
 - [Governance Model](docs/GOVERNANCE.md) — budgets, approvals, gates, rollback, escalation
 - [TOML Configuration Reference](docs/CONFIG-REFERENCE.md) — every config option explained
+
+## CLI Usage
+
+```bash
+rexx orchestrate.rex [company.toml] [--dry-run] [--preflight]
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--preflight` | Verify all agent runtimes, API keys, script paths, and working directories. Exits with error count. |
+| `--dry-run` | Run candidate discovery, wave scheduling, and budget checks, then print the dispatch plan without executing agents or spending money. |
+| *(no flags)* | Normal execution — dispatch agents and process tickets. |
 
 ## How It Works
 

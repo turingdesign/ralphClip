@@ -182,4 +182,10 @@ You're ready. Follow the [Tutorial](docs/TUTORIAL.md) to set up your first compa
 ```bash
 mkdir ~/my-company && cd ~/my-company
 bash ~/ralphclip/setup.sh
+
+# After setup, verify all configured agents are reachable:
+rexx ~/ralphclip/orchestrate.rex --preflight
+
+# Preview what would run (no money spent):
+rexx ~/ralphclip/orchestrate.rex --dry-run
 ```
