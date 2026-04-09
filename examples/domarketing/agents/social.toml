@@ -1,0 +1,6 @@
+role = "Social Media Manager"
+runtime = "trinity"
+model = "trinity-mini"
+budget_usd = 5.00
+skill = "social-content"
+projects = ["paddockapp", "sss"]

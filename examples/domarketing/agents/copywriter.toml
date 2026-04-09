@@ -1,0 +1,6 @@
+role = "Copywriter"
+runtime = "claude"
+model = "claude-sonnet-4-20250514"
+budget_usd = 25.00
+skill = "direct-response-copy"
+projects = ["paddockapp", "sss"]

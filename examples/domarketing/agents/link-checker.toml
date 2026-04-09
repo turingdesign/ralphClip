@@ -1,0 +1,6 @@
+role = "Link Checker"
+runtime = "script"
+script = "scripts/check-links.sh"
+budget_usd = 0.00
+trigger = "after:seo-writer"
+projects = ["paddockapp", "sss"]

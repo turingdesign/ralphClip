@@ -1,0 +1,34 @@
+[company]
+name = "SomeBiz — BricksFit Plugin"
+monthly_budget_usd = 120.00
+
+# --- Projects ---
+
+[projects.bricksfit]
+client = "Internal"
+budget_usd = 120.00
+working_dir = "~/projects/bricksfit-plugin"
+context_wiki = "Projects/BricksFit/Context"
+goals = ["G001"]
+
+# --- Governance ---
+
+[governance]
+require_approval = ["deploy", "wp-org-submit"]
+auto_approve = ["lint", "test", "metrics"]
+
+[governance.gates.code]
+pipeline = ["linter", "test-runner"]
+on_fail = "reopen"
+
+[governance.gates.deploy]
+pipeline = ["linter", "test-runner", "human-approval"]
+on_fail = "park"
+
+[governance.escalation]
+max_consecutive_failures = 3
+notification_file = "/tmp/ralphclip-somebiz-escalation.txt"
+
+[orchestrator]
+max_iterations = 5
+log_dir = "runs"

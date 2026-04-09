@@ -1,0 +1,16 @@
+role = "Senior PHP Engineer"
+runtime = "mistral"
+model = "devstral-2"
+budget_usd = 45.00
+skill = "implement-php"
+projects = ["bricksfit"]
+allowed_paths = ["includes/", "elements/", "tests/"]
+forbidden_paths = ["vendor/", ".git/"]
+fallback_runtime = "gemini"
+fallback_model = "gemini-3-flash"
+context = """
+Stack: PHP 8.1+, WordPress 6.4+, Bricks Builder 1.11+.
+Namespace: SomeBiz\BricksFit.
+Bricks elements extend \Bricks\Element.
+Must pass PHPCS with WordPress-Extra ruleset.
+"""

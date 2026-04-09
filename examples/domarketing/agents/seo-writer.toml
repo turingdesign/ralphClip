@@ -1,0 +1,6 @@
+role = "SEO Content Writer"
+runtime = "trinity"
+model = "trinity-mini"
+budget_usd = 10.00
+skill = "seo-longform"
+projects = ["paddockapp", "sss"]

@@ -1,0 +1,8 @@
+role = "CTO"
+runtime = "claude"
+model = "claude-sonnet-4-20250514"
+budget_usd = 20.00
+skill = "decompose"
+projects = ["bricksfit"]
+fallback_runtime = "trinity"
+fallback_model = "trinity-large-thinking"

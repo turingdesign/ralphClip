@@ -1,0 +1,6 @@
+role = "Test Runner"
+runtime = "script"
+script = "scripts/run-tests.sh"
+budget_usd = 0.00
+trigger = "after:linter"
+projects = ["bricksfit"]

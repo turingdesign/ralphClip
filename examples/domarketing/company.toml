@@ -1,0 +1,37 @@
+[company]
+name = "DoMarketing"
+monthly_budget_usd = 80.00
+
+# --- Projects ---
+
+[projects.paddockapp]
+client = "PaddockApp Pty Ltd"
+budget_usd = 50.00
+working_dir = "~/clients/paddockapp-marketing"
+context_wiki = "Projects/PaddockApp/Context"
+goals = ["G001"]
+
+[projects.sss]
+client = "Strong Stable Seat"
+budget_usd = 30.00
+working_dir = "~/clients/sss-brand"
+context_wiki = "Projects/SSS/Context"
+goals = ["G002"]
+
+# --- Governance ---
+
+[governance]
+require_approval = ["client-facing", "publish", "outreach"]
+auto_approve = ["metrics", "keyword-check", "link-check"]
+
+[governance.gates.content]
+pipeline = ["word-counter", "link-checker"]
+on_fail = "reopen"
+
+[governance.escalation]
+max_consecutive_failures = 3
+notification_file = "/tmp/ralphclip-domarketing-escalation.txt"
+
+[orchestrator]
+max_iterations = 5
+log_dir = "runs"

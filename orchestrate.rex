@@ -1,0 +1,1094 @@
+#!/usr/bin/env rexx
+/*--------------------------------------------------------------------*/
+/* orchestrate.rex — RalphClip main orchestration loop                 */
+/*                                                                     */
+/* Ralph's simplicity meets Paperclip's organisational structure.       */
+/* Reads company.toml, queries Fossil tickets, dispatches agents,      */
+/* enforces budgets and governance, logs everything.                    */
+/*                                                                     */
+/* v2.0 — Error recovery, handoff protocol, observability.            */
+/*                                                                     */
+/* Usage: rexx orchestrate.rex [company_toml_path]                     */
+/*--------------------------------------------------------------------*/
+
+SIGNAL ON HALT NAME cleanup
+
+/* Resolve paths */
+PARSE SOURCE . . sourceFile
+ralphclipHome = LEFT(sourceFile, LASTPOS('/', sourceFile) - 1)
+
+/* Load libraries */
+CALL (ralphclipHome'/lib/toml.rex')
+CALL (ralphclipHome'/lib/fossil.rex')
+CALL (ralphclipHome'/lib/trace.rex')
+CALL (ralphclipHome'/lib/handoff.rex')
+CALL (ralphclipHome'/lib/parked.rex')
+CALL (ralphclipHome'/lib/escalation.rex')
+CALL (ralphclipHome'/lib/mutex.rex')
+CALL (ralphclipHome'/lib/worker.rex')
+CALL (ralphclipHome'/lib/scheduler.rex')
+CALL (ralphclipHome'/adapters.rex')
+
+/*--------------------------------------------------------------------*/
+/* Preflight checks                                                    */
+/*--------------------------------------------------------------------*/
+IF \(.FossilHelper~preflight()) THEN EXIT 1
+
+/*--------------------------------------------------------------------*/
+/* Configuration                                                       */
+/*--------------------------------------------------------------------*/
+IF ARG() > 0 THEN
+   companyToml = ARG(1)
+ELSE
+   companyToml = 'company.toml'
+
+IF \SysFileExists(companyToml) THEN DO
+   SAY '[FATAL] Cannot find' companyToml
+   EXIT 1
+END
+
+config = .TomlParser~parse(companyToml)
+companyName   = .TomlParser~get(config, 'company.name', 'Unnamed')
+companyCap    = .TomlParser~get(config, 'company.monthly_budget_usd', 0)
+maxIterations = .TomlParser~get(config, 'orchestrator.max_iterations', 5)
+logDir        = .TomlParser~get(config, 'orchestrator.log_dir', 'runs')
+
+/* Governance config */
+requireApproval = .TomlParser~get(config, 'governance.require_approval', '')
+maxFailures     = .TomlParser~get(config, 'governance.escalation.max_consecutive_failures', 3)
+notifyFile      = .TomlParser~get(config, 'governance.escalation.notification_file', -
+                  '/tmp/ralphclip-escalation.txt')
+
+/* Run ID — ISO 8601 compact format for tracing */
+isoTs = .FossilHelper~isoTimestampCompact()
+runId = 'run-'isoTs
+runDir = logDir'/'runId
+ADDRESS SYSTEM 'mkdir -p' runDir
+
+SAY '================================================================'
+SAY ' RalphClip —' companyName
+SAY ' Run:' runId
+SAY '================================================================'
+
+/*--------------------------------------------------------------------*/
+/* Initialise cost table and tracer                                    */
+/*--------------------------------------------------------------------*/
+costTable = .TraceWriter~buildCostTable(config)
+tracer = .TraceWriter~new(runId, 'traces', costTable)
+tracer~start()
+tracer~span('orchestrator.init', '', .FossilHelper~isoTimestamp(), -
+            0, 0, 0, 'ok', '', '', 'Loaded config, initialised tracer')
+
+/* Fossil mutex for concurrent access */
+mutex = .FossilMutex~new()
+
+/*--------------------------------------------------------------------*/
+/* Create required directories                                         */
+/*--------------------------------------------------------------------*/
+ADDRESS SYSTEM 'mkdir -p parked_tasks handoffs traces escalations debug/mcp_dry_run'
+
+/*--------------------------------------------------------------------*/
+/* Process pending human escalation responses                          */
+/*--------------------------------------------------------------------*/
+escalResponses = .EscalationReader~scanPending('escalations')
+IF escalResponses~items > 0 THEN DO
+   SAY '[escalation] Processing' escalResponses~items 'human response(s)...'
+   DO er = 1 TO escalResponses~items
+      resp = escalResponses[er]
+      SAY '[escalation]' resp['action'] '→' resp['task'] -
+         '(ticket:' resp['ticket_id']')'
+      CALL .EscalationReader~applyResponse resp
+   END
+   SAY '[escalation] Done.'
+   SAY ''
+END
+
+/*--------------------------------------------------------------------*/
+/* Company budget gate                                                 */
+/*--------------------------------------------------------------------*/
+companySpent = readBudgetSpent()
+CALL logGov 'RUN START', 'all', 'orchestrate.rex triggered'
+
+IF companySpent >= companyCap THEN DO
+   CALL logGov 'BUDGET HALT', 'all', -
+      'Company ceiling reached:' companySpent '/' companyCap
+   SAY '[BUDGET] Company budget exhausted:' companySpent '/' companyCap
+   tracer~finish()
+   EXIT 0
+END
+SAY '[BUDGET]' FORMAT(companySpent,,2) '/' FORMAT(companyCap,,2) 'USD'
+
+/*--------------------------------------------------------------------*/
+/* Load projects                                                       */
+/*--------------------------------------------------------------------*/
+projectSections = .TomlParser~sections(config, 'projects')
+completedAgents = ''  /* track which agents completed work this run */
+totalCompleted = 0
+totalFailed = 0
+totalParked = 0
+totalDispatched = 0
+lastCompletedTask = ''   /* for handoff chain tracking */
+lastCompletedAdapter = ''
+lastCompletedFossilRef = ''
+
+DO p = 1 TO projectSections~items
+   projKey  = projectSections[p]
+   projCode = SUBSTR(projKey, LASTPOS('.', projKey) + 1)
+   projDir  = .TomlParser~get(config, projKey'.working_dir', '.')
+   projCap  = .TomlParser~get(config, projKey'.budget_usd', 0)
+   projCtxPage = .TomlParser~get(config, projKey'.context_wiki', '')
+
+   /* Expand ~ in path */
+   IF LEFT(projDir, 1) = '~' THEN
+      projDir = VALUE('HOME',, 'ENVIRONMENT') || SUBSTR(projDir, 2)
+
+   /* Project budget gate */
+   projSpent = readProjectSpend(projCode)
+   IF projSpent >= projCap & projCap > 0 THEN DO
+      CALL logGov 'BUDGET HOLD', projCode, -
+         'Project budget reached:' projSpent '/' projCap
+      SAY '[' || projCode || '] Project budget exhausted. Skipping.'
+      ITERATE
+   END
+
+   SAY ''
+   SAY '==== Project:' projCode '===='
+
+   /* Load project context from wiki */
+   projCtx = ''
+   IF projCtxPage \= '' THEN projCtx = .FossilHelper~wikiExport(projCtxPage)
+
+   /*-----------------------------------------------------------------*/
+   /* CANDIDATE DISCOVERY: Find eligible agents (no claims yet)        */
+   /*-----------------------------------------------------------------*/
+   agentFiles. = ''
+   ADDRESS SYSTEM 'ls agents/*.toml 2>/dev/null' WITH OUTPUT STEM agentFiles.
+   scheduler = .WaveScheduler~new()
+
+   DO a = 1 TO agentFiles.0
+      agentFile = STRIP(agentFiles.a)
+      IF agentFile = '' THEN ITERATE
+
+      ac = .TomlParser~parse(agentFile)
+      agentName     = FILESPEC('N', agentFile)
+      agentName     = LEFT(agentName, LASTPOS('.', agentName) - 1)
+      agentRuntime  = .TomlParser~get(ac, 'runtime', 'claude')
+      agentModel    = .TomlParser~get(ac, 'model', '')
+      agentBudget   = .TomlParser~get(ac, 'budget_usd', 0)
+      agentProjects = .TomlParser~get(ac, 'projects', '')
+      agentTrigger  = .TomlParser~get(ac, 'trigger', 'ticket')
+      agentOwnDir   = .TomlParser~get(ac, 'working_dir', '')
+
+      fallbackAdapters = .TomlParser~get(ac, 'fallback_adapters', '')
+      IF fallbackAdapters = '' THEN DO
+         legacyFb = .TomlParser~get(ac, 'fallback_runtime', '')
+         IF legacyFb \= '' THEN fallbackAdapters = legacyFb
+      END
+
+      taskMaxRetries  = .TomlParser~get(ac, 'max_retries', 1)
+      taskBackoff     = .TomlParser~get(ac, 'backoff', 'fixed')
+      taskBackoffBase = .TomlParser~get(ac, 'backoff_base_seconds', 0)
+      taskFailAction  = .TomlParser~get(ac, 'fail_action', 'park')
+      IF \DATATYPE(taskMaxRetries, 'W') THEN taskMaxRetries = 1
+      IF \DATATYPE(taskBackoffBase, 'N') THEN taskBackoffBase = 0
+
+      agentProjectCount = WORDS(agentProjects)
+      IF agentOwnDir \= '' & agentProjectCount <= 1 THEN
+         agentWorkDir = agentOwnDir
+      ELSE
+         agentWorkDir = projDir
+      IF LEFT(agentWorkDir, 1) = '~' THEN
+         agentWorkDir = VALUE('HOME',, 'ENVIRONMENT') || SUBSTR(agentWorkDir, 2)
+
+      /* Static eligibility checks */
+      IF agentProjects \= '' & WORDPOS(projCode, agentProjects) = 0 THEN ITERATE
+      agentSpent = readAgentSpend(agentName)
+      IF agentSpent >= agentBudget & agentBudget > 0 THEN DO
+         CALL logGov 'BUDGET HOLD', projCode, -
+            agentName 'budget reached:' agentSpent '/' agentBudget
+         ITERATE
+      END
+      IF agentTrigger = 'manual' THEN ITERATE
+
+      adapterRuntimes = agentRuntime
+      IF fallbackAdapters \= '' THEN
+         adapterRuntimes = adapterRuntimes fallbackAdapters
+
+      /* Peek at the agent's next ticket to get dependency info.
+         Read-only — no status change. If no ticket, skip. */
+      peekTicket = .FossilHelper~ticketPeek(agentName, projCode)
+      IF peekTicket = '' THEN ITERATE
+      PARSE VAR peekTicket . '|' . '|' . '|' peekDeps '|' .
+      peekDeps = STRIP(peekDeps)
+
+      /* Register scheduling candidate — carry all config through */
+      candidate = .Directory~new
+      candidate['agentName']       = agentName
+      candidate['trigger']         = agentTrigger
+      candidate['deps']            = peekDeps
+      candidate['workDir']         = agentWorkDir
+      candidate['agentRole']       = .TomlParser~get(ac, 'role', agentName)
+      candidate['agentRuntime']    = agentRuntime
+      candidate['agentModel']      = agentModel
+      candidate['agentScript']     = .TomlParser~get(ac, 'script', '')
+      candidate['agentSkill']      = .TomlParser~get(ac, 'skill', '')
+      candidate['agentAllowed']    = .TomlParser~get(ac, 'allowed_paths', '')
+      candidate['agentForbid']     = .TomlParser~get(ac, 'forbidden_paths', '')
+      candidate['agentCtx']        = .TomlParser~get(ac, 'context', '')
+      candidate['agentConfig']     = ac
+      candidate['taskMaxRetries']  = taskMaxRetries
+      candidate['taskBackoff']     = taskBackoff
+      candidate['taskBackoffBase'] = taskBackoffBase
+      candidate['taskFailAction']  = taskFailAction
+      candidate['adapterRuntimes'] = adapterRuntimes
+      candidate['fallbackModel']   = .TomlParser~get(ac, 'fallback_model', '')
+
+      scheduler~addCandidate(candidate)
+   END /* candidate discovery */
+
+   /*-----------------------------------------------------------------*/
+   /* WAVE SCHEDULING: dependency-aware concurrency tiers               */
+   /*-----------------------------------------------------------------*/
+   waves = scheduler~buildWaves(completedAgents)
+
+   IF waves~items > 0 THEN
+      CALL .WaveScheduler~describeWaves waves
+
+   /*-----------------------------------------------------------------*/
+   /* WAVE EXECUTION LOOP                                              */
+   /*-----------------------------------------------------------------*/
+   DO w = 1 TO waves~items
+      wave = waves[w]
+      SAY '---- Wave' w 'of' waves~items '('wave~items 'agents) ----'
+
+      /* -- WAVE PLAN: claim tickets, build prompts -- */
+      dispatchQueue = .Array~new
+
+      DO wc = 1 TO wave~items
+         c = wave[wc]
+         agentName = c['agentName']
+
+         ticket = mutex~claimTicket(agentName, projCode)
+         IF ticket = '' THEN ITERATE
+
+         PARSE VAR ticket ticketId '|' ticketTitle '|' goalChain '|' deps '|' gateType
+         ticketId = STRIP(ticketId); ticketTitle = STRIP(ticketTitle)
+         goalChain = STRIP(goalChain); deps = STRIP(deps); gateType = STRIP(gateType)
+
+         IF deps \= '' & \(mutex~allDepsClosed(deps)) THEN DO
+            SAY '['agentName'] "'ticketTitle'" has unmet deps. Releasing.'
+            mutex~ticketChange(ticketId, 'status=open')
+            ITERATE
+         END
+
+         ticketType = mutex~ticketField(ticketId, 'type')
+         IF requiresApproval(ticketType, requireApproval) THEN DO
+            mutex~ticketChange(ticketId, 'status=awaiting-approval')
+            CALL logGov 'APPROVAL REQUIRED', projCode, -
+               'Ticket "'ticketTitle'" needs human approval'
+            totalParked = totalParked + 1
+            ITERATE
+         END
+
+         CALL logGov 'DISPATCHED', projCode, -
+            agentName '→ "'ticketTitle'" [wave' w']'
+         SAY '['agentName'] Queued:' ticketTitle
+         totalDispatched = totalDispatched + 1
+         tracer~countTask('ok')
+
+         /* Build prompt */
+         prompt = ''
+         agentSkill = c['agentSkill']
+         IF agentSkill \= '' & SysFileExists('skills/'agentSkill'.md') THEN
+            prompt = readFile('skills/'agentSkill'.md')
+         prompt = prompt || '0a'x
+         prompt = prompt || 'Role:' c['agentRole'] || '0a'x
+         IF goalChain \= '' THEN
+            prompt = prompt || 'Goal ancestry:' goalChain || '0a'x
+         prompt = prompt || 'Task:' ticketTitle || '0a'x
+         IF c['agentCtx'] \= '' THEN
+            prompt = prompt || '0a'x || c['agentCtx'] || '0a'x
+         IF projCtx \= '' THEN
+            prompt = prompt || '0a'x || 'Project context:' || '0a'x || projCtx || '0a'x
+         learnings = .FossilHelper~wikiExport('AgentLearnings/'agentName)
+         IF learnings \= '' & learnings \= 'No learnings yet.' THEN
+            prompt = prompt || '0a'x || 'Learnings:' || '0a'x || learnings || '0a'x
+         CALL injectHandoffContext ticketId, deps, prompt
+         IF c['agentAllowed'] \= '' THEN DO
+            prompt = prompt || '0a'x || 'SCOPE: Only modify:' c['agentAllowed'] || '0a'x
+            IF c['agentForbid'] \= '' THEN
+               prompt = prompt || 'Do NOT touch:' c['agentForbid'] || '0a'x
+         END
+         prompt = prompt || '0a'x || 'When done, output <promise>COMPLETE</promise>.' || '0a'x
+
+         taskSpec = .Directory~new
+         taskSpec['agentName']       = agentName
+         taskSpec['agentRuntime']    = c['agentRuntime']
+         taskSpec['agentModel']      = c['agentModel']
+         taskSpec['agentScript']     = c['agentScript']
+         taskSpec['agentWorkDir']    = c['workDir']
+         taskSpec['ticketId']        = ticketId
+         taskSpec['ticketTitle']     = ticketTitle
+         taskSpec['ticketType']      = ticketType
+         taskSpec['goalChain']       = goalChain
+         taskSpec['gateType']        = gateType
+         taskSpec['projCode']        = projCode
+         taskSpec['prompt']          = prompt
+         taskSpec['taskMaxRetries']  = c['taskMaxRetries']
+         taskSpec['taskBackoff']     = c['taskBackoff']
+         taskSpec['taskBackoffBase'] = c['taskBackoffBase']
+         taskSpec['taskFailAction']  = c['taskFailAction']
+         taskSpec['adapterRuntimes'] = c['adapterRuntimes']
+         taskSpec['fallbackModel']   = c['fallbackModel']
+         taskSpec['maxIterations']   = maxIterations
+         taskSpec['runDir']          = runDir
+         taskSpec['agentConfig']     = c['agentConfig']
+
+         dispatchQueue~append(taskSpec)
+      END /* wave plan */
+
+      /* -- WAVE EXECUTE: parallel dispatch -- */
+      asyncMessages = .Array~new
+      IF dispatchQueue~items > 0 THEN DO
+         SAY '[parallel] Wave' w':' dispatchQueue~items 'agent(s)'
+         DO i = 1 TO dispatchQueue~items
+            worker = .TaskWorker~new(dispatchQueue[i], mutex, tracer, runId)
+            msg = worker~start('execute')
+            asyncMessages~append(msg)
+         END
+      END
+
+      /* -- WAVE COMMIT: serial results processing -- */
+      DO i = 1 TO asyncMessages~items
+         outcome = asyncMessages[i]~result
+         taskSpec = dispatchQueue[i]
+
+         agentName    = taskSpec['agentName']
+         ticketId     = taskSpec['ticketId']
+         ticketTitle  = taskSpec['ticketTitle']
+         ticketType   = taskSpec['ticketType']
+         goalChain    = taskSpec['goalChain']
+         gateType     = taskSpec['gateType']
+         agentWorkDir = taskSpec['agentWorkDir']
+         failAction   = taskSpec['taskFailAction']
+         ac           = taskSpec['agentConfig']
+         taskMaxRetries = taskSpec['taskMaxRetries']
+
+         completed    = outcome['completed']
+         lastResult   = outcome['lastResult']
+         attemptLog   = outcome['attemptLog']
+         taskSafeName = outcome['taskSafeName']
+         adapterUsed  = outcome['adapterUsed']
+         companySpent = companySpent + outcome['totalCost']
+
+         IF completed THEN DO
+            IF ticketType = 'epic' THEN DO
+               sc = createStoriesFromOutput(lastResult['output'], projCode, goalChain)
+               IF sc > 0 THEN SAY '['agentName'] Created' sc 'stories'
+            END
+            gatesPassed = runQualityGates(gateType, projCode, agentWorkDir, config)
+            IF gatesPassed THEN DO
+               mutex~ticketClose(ticketId)
+               CALL logGov 'COMPLETED', projCode, agentName '→' ticketId
+               CALL updateLearnings agentName, lastResult['output']
+               CALL resetEscalation agentName
+               completedAgents = completedAgents agentName
+               totalCompleted = totalCompleted + 1
+               CALL writeHandoff ticketTitle, agentName, adapterUsed, -
+                  'post-success:'taskSafeName, runId, projCode
+            END
+            ELSE DO
+               mutex~ticketChange(ticketId, 'status=open')
+               CALL logGov 'GATE FAILED', projCode, agentName '→ "'ticketTitle'"'
+               totalFailed = totalFailed + 1
+            END
+         END
+         ELSE DO
+            IF lastResult \= .nil & lastResult['error_class'] \= 'fatal' THEN DO
+               SELECT
+                  WHEN failAction = 'park' THEN DO
+                     CALL parkTask ticketTitle, taskMaxRetries, adapterUsed, -
+                        lastResult, attemptLog, ac, agentName
+                     mutex~commitWithTag('[parked] task:'ticketTitle -
+                        'run:'runId, 'parked:'taskSafeName)
+                     totalParked = totalParked + 1
+                  END
+                  WHEN failAction = 'escalate' THEN DO
+                     ef = .EscalationWriter~write(ticketTitle, ticketId, -
+                        agentName, projCode, taskMaxRetries, attemptLog, -
+                        lastResult, taskSpec['prompt'], runId, -
+                        'Retries exhausted', 'escalations')
+                     mutex~ticketChange(ticketId, 'status=escalated')
+                     CALL logGov 'ESCALATED', projCode, agentName '→' ef
+                     mutex~commitAll('[escalated] task:'ticketTitle 'run:'runId)
+                     totalParked = totalParked + 1
+                  END
+                  WHEN failAction = 'skip' THEN DO
+                     CALL logGov 'SKIPPED', projCode, agentName '→ "'ticketTitle'"'
+                     mutex~commitAll('[skipped] task:'ticketTitle 'run:'runId)
+                     tracer~countTask('skipped')
+                     totalFailed = totalFailed + 1
+                  END
+                  OTHERWISE DO
+                     mutex~ticketChange(ticketId, 'status=open')
+                     totalFailed = totalFailed + 1
+                  END
+               END
+               CALL checkEscalation agentName, projCode, ticketTitle
+            END
+            ELSE IF lastResult \= .nil & lastResult['error_class'] = 'fatal' THEN DO
+               CALL parkTask ticketTitle, attemptLog~items, adapterUsed, -
+                  lastResult, attemptLog, ac, agentName
+               mutex~commitWithTag('[parked] task:'ticketTitle -
+                  'reason:fatal run:'runId, 'parked:'taskSafeName)
+               totalParked = totalParked + 1
+            END
+            ELSE DO
+               mutex~ticketChange(ticketId, 'status=open')
+               totalFailed = totalFailed + 1
+            END
+         END
+      END /* wave commit */
+
+   END /* wave loop */
+END /* project loop */
+
+/*--------------------------------------------------------------------*/
+/* Run summary                                                         */
+/*--------------------------------------------------------------------*/
+SAY ''
+
+IF totalDispatched = 0 THEN DO
+   SAY '================================================================'
+   SAY ' Run idle — no work to dispatch'
+   SAY '================================================================'
+   CALL logGov 'RUN IDLE', 'all', 'No open tickets matched any agent'
+   ADDRESS SYSTEM 'rmdir' runDir '2>/dev/null'
+   tracer~finish()
+END
+ELSE DO
+   SAY '================================================================'
+   SAY ' Run complete:' totalCompleted 'completed,' -
+      totalFailed 'failed,' totalParked 'parked'
+   SAY ' Dispatched:' totalDispatched 'tasks'
+   SAY '================================================================'
+
+   CALL logGov 'RUN END', 'all', -
+      totalDispatched 'dispatched,' totalCompleted 'completed,' -
+      totalFailed 'failed,' totalParked 'parked'
+
+   /* Write run summary file */
+   summary = 'RalphClip Run Summary' || '0a'x
+   summary = summary || 'Run:        ' runId || '0a'x
+   summary = summary || 'Company:    ' companyName || '0a'x
+   summary = summary || 'Dispatched: ' totalDispatched || '0a'x
+   summary = summary || 'Completed:  ' totalCompleted || '0a'x
+   summary = summary || 'Failed:     ' totalFailed || '0a'x
+   summary = summary || 'Parked:     ' totalParked || '0a'x
+   summary = summary || 'Spent:      $' FORMAT(companySpent,,4) || '0a'x
+   CALL CHAROUT runDir'/summary.log', summary
+   CALL STREAM runDir'/summary.log', 'C', 'CLOSE'
+
+   /* Housekeeping: archive old artifacts */
+   CALL cleanupOldFiles 'handoffs', 30
+   CALL cleanupOldFiles 'parked_tasks', 30
+   CALL cleanupOldFiles 'escalations', 30, '.done'
+
+   /* Finalise trace and commit */
+   tracer~finish()
+END
+
+EXIT 0
+
+
+/*====================================================================*/
+/* Helper routines                                                     */
+/*====================================================================*/
+
+/*--------------------------------------------------------------------*/
+/* readFile — read entire file into a string                           */
+/*--------------------------------------------------------------------*/
+readFile: PROCEDURE
+   PARSE ARG filePath
+   IF \SysFileExists(filePath) THEN RETURN ''
+   content = CHARIN(filePath, 1, CHARS(filePath))
+   CALL STREAM filePath, 'C', 'CLOSE'
+   RETURN content
+
+/*--------------------------------------------------------------------*/
+/* parkTask — write a parked task file using the ParkedWriter          */
+/*--------------------------------------------------------------------*/
+parkTask: PROCEDURE
+   PARSE ARG taskName, attempts, finalAdapter, result, attemptLog, ac, agentName
+
+   /* Build a TOML config summary string */
+   taskConfig = '[task.'agentName']' || '0a'x
+   taskConfig = taskConfig || 'runtime = "'result['error_class']'"' || '0a'x
+   /* Include key fields from agent config */
+   sup = ac~supplier
+   DO WHILE sup~available
+      taskConfig = taskConfig || sup~index '= "'sup~item'"' || '0a'x
+      sup~next
+   END
+
+   filePath = .ParkedWriter~write(taskName, attempts, finalAdapter, -
+      result['error_class'], result['error_message'], -
+      attemptLog, taskConfig, result['output'], 'parked_tasks')
+
+   SAY '['agentName'] Parked task written to:' filePath
+   RETURN
+
+/*--------------------------------------------------------------------*/
+/* writeHandoff — create a handoff document after successful task      */
+/*--------------------------------------------------------------------*/
+writeHandoff: PROCEDURE
+   PARSE ARG taskName, agentName, adapterName, fossilRef, runId, projCode
+
+   filePath = .HandoffWriter~write( -
+      taskName, -           /* sourceTask */
+      'next',  -            /* targetTask — placeholder */
+      adapterName, -        /* adapter */
+      fossilRef, -          /* fossil ref */
+      runId, -              /* run ID */
+      '', -                 /* outputFiles — agent doesn't declare these yet */
+      0, -                  /* recordCount */
+      '', -                 /* confidence */
+      'Task "'taskName'" completed by' agentName, - /* summary */
+      '', -                 /* schema */
+      '', -                 /* validationRules */
+      'park', -             /* onFailure */
+      'handoffs')           /* directory */
+
+   CALL logGov 'HANDOFF', projCode, -
+      'Handoff written:' taskName '→ next ('filePath')'
+
+   handoffMsg = '[handoff] task:'taskName 'run:'runId
+   CALL .FossilHelper~commitAll handoffMsg
+   RETURN
+
+/*--------------------------------------------------------------------*/
+/* injectHandoffContext — inject handoffs from upstream dependencies   */
+/*                                                                     */
+/* Only injects handoffs whose source task matches one of this         */
+/* ticket's dependency tickets. Resolves dep ticket IDs to task        */
+/* titles, then matches against handoff filenames and source_task.    */
+/*--------------------------------------------------------------------*/
+injectHandoffContext: PROCEDURE
+   PARSE ARG ticketId, deps, prompt
+
+   /* No dependencies = no upstream handoffs to inject */
+   IF deps = '' THEN RETURN
+
+   /* Resolve dependency ticket IDs to task titles */
+   upstreamTasks = ''
+   remaining = deps
+   DO WHILE remaining \= ''
+      PARSE VAR remaining dep ',' remaining
+      dep = STRIP(dep)
+      IF dep = '' THEN ITERATE
+      /* Look up the title of the dependency ticket */
+      depTitle = .FossilHelper~ticketField(dep, 'title')
+      IF depTitle \= '' THEN
+         upstreamTasks = upstreamTasks || depTitle || '0a'x
+   END
+   IF upstreamTasks = '' THEN RETURN
+
+   /* Scan handoff files, only inject those from upstream tasks */
+   ADDRESS SYSTEM 'ls handoffs/*.md 2>/dev/null' WITH OUTPUT STEM hfiles.
+   IF hfiles.0 = 0 THEN RETURN
+
+   injected = 0
+
+   DO h = 1 TO hfiles.0
+      hfile = STRIP(hfiles.h)
+      IF hfile = '' THEN ITERATE
+
+      ho = .HandoffReader~parse(hfile)
+      sourceTask = ho['source_task']
+
+      /* Check if this handoff's source task is one of our dependencies */
+      IF POS(sourceTask, upstreamTasks) = 0 THEN ITERATE
+
+      /* Validate before injecting */
+      valResult = .HandoffReader~validate(ho)
+
+      IF valResult['ok'] THEN DO
+         prompt = prompt || '0a'x
+         prompt = prompt || '--- HANDOFF FROM: 'sourceTask' ---' || '0a'x
+         prompt = prompt || 'Summary:' ho['summary'] || '0a'x
+         IF ho['output_files'] \= '' & ho['output_files'] \= 'N/A' THEN
+            prompt = prompt || 'Output files:' ho['output_files'] || '0a'x
+         IF ho['confidence'] \= '' & ho['confidence'] \= 'N/A' THEN
+            prompt = prompt || 'Confidence:' ho['confidence'] || '0a'x
+         prompt = prompt || '--- END HANDOFF ---' || '0a'x
+         injected = injected + 1
+      END
+      ELSE DO
+         errors = valResult['errors']
+         DO e = 1 TO errors~items
+            SAY '[handoff] Validation warning ('sourceTask'):' errors[e]
+         END
+      END
+   END
+
+   IF injected > 0 THEN
+      SAY '[handoff] Injected' injected 'upstream handoff(s) into prompt'
+   RETURN
+
+/*--------------------------------------------------------------------*/
+/* Budget helpers — read/write wiki Budget page                        */
+/*--------------------------------------------------------------------*/
+readBudgetSpent: PROCEDURE
+   page = .FossilHelper~wikiExport('Budget')
+   IF page = '' THEN RETURN 0
+   spentPos = POS('spent:', page)
+   IF spentPos = 0 THEN RETURN 0
+   PARSE VAR page . 'spent:' spent .
+   IF DATATYPE(STRIP(spent), 'N') THEN RETURN STRIP(spent)
+   RETURN 0
+
+readProjectSpend: PROCEDURE
+   PARSE ARG projCode
+   page = .FossilHelper~wikiExport('Budget')
+   marker = projCode || ':'
+   pos = POS(marker, page)
+   IF pos = 0 THEN RETURN 0
+   chunk = SUBSTR(page, pos + LENGTH(marker))
+   PARSE VAR chunk spent .
+   IF DATATYPE(STRIP(spent), 'N') THEN RETURN STRIP(spent)
+   RETURN 0
+
+readAgentSpend: PROCEDURE
+   PARSE ARG agentName
+   page = .FossilHelper~wikiExport('Budget')
+   marker = agentName || ':'
+   pos = POS(marker, page)
+   IF pos = 0 THEN RETURN 0
+   chunk = SUBSTR(page, pos + LENGTH(marker))
+   PARSE VAR chunk spent .
+   IF DATATYPE(STRIP(spent), 'N') THEN RETURN STRIP(spent)
+   RETURN 0
+
+/*--------------------------------------------------------------------*/
+/* Governance helpers                                                  */
+/*--------------------------------------------------------------------*/
+logGov: PROCEDURE
+   PARSE ARG event, project, details
+   entry = DATE('S') TIME() '|' event '|' project '|' details
+   CALL .FossilHelper~wikiAppend 'GovernanceLog', entry
+   RETURN
+
+requiresApproval: PROCEDURE
+   PARSE ARG ticketType, approvalList
+   RETURN (WORDPOS(ticketType, approvalList) > 0)
+
+shouldRun: PROCEDURE
+   PARSE ARG trigger, completedAgents
+   SELECT
+      WHEN trigger = 'always' THEN RETURN 1
+      WHEN trigger = 'manual' THEN RETURN 0
+      WHEN trigger = 'ticket' THEN RETURN 1
+      WHEN LEFT(trigger, 6) = 'after:' THEN DO
+         dep = SUBSTR(trigger, 7)
+         RETURN (WORDPOS(dep, completedAgents) > 0)
+      END
+      WHEN LEFT(trigger, 5) = 'cron:' THEN DO
+         cronExpr = STRIP(SUBSTR(trigger, 6))
+         RETURN matchesCron(cronExpr)
+      END
+      OTHERWISE RETURN 1
+   END
+
+/*--------------------------------------------------------------------*/
+/* matchesCron — check if current time matches a 5-field cron expr     */
+/*--------------------------------------------------------------------*/
+matchesCron: PROCEDURE
+   PARSE ARG cronExpr
+   curMinute = SUBSTR(TIME(), 1, 2) + 0
+   curHour   = SUBSTR(TIME(), 4, 2) + 0
+   curDay    = SUBSTR(DATE('S'), 7, 2) + 0
+   curMonth  = SUBSTR(DATE('S'), 5, 2) + 0
+
+   dayName = LEFT(DATE('W'), 3)
+   SELECT
+      WHEN dayName = 'Sun' THEN curDow = 0
+      WHEN dayName = 'Mon' THEN curDow = 1
+      WHEN dayName = 'Tue' THEN curDow = 2
+      WHEN dayName = 'Wed' THEN curDow = 3
+      WHEN dayName = 'Thu' THEN curDow = 4
+      WHEN dayName = 'Fri' THEN curDow = 5
+      WHEN dayName = 'Sat' THEN curDow = 6
+      OTHERWISE curDow = 0
+   END
+
+   PARSE VAR cronExpr fMinute fHour fDom fMonth fDow .
+
+   IF \cronFieldMatches(fMinute, curMinute) THEN RETURN 0
+   IF \cronFieldMatches(fHour, curHour) THEN RETURN 0
+   IF \cronFieldMatches(fDom, curDay) THEN RETURN 0
+   IF \cronFieldMatches(fMonth, curMonth) THEN RETURN 0
+   IF \cronFieldMatches(fDow, curDow) THEN RETURN 0
+
+   RETURN 1
+
+/*--------------------------------------------------------------------*/
+/* cronFieldMatches — check if a value matches a single cron field     */
+/*--------------------------------------------------------------------*/
+cronFieldMatches: PROCEDURE
+   PARSE ARG field, value
+
+   IF field = '*' THEN RETURN 1
+
+   remaining = field
+   DO WHILE remaining \= ''
+      PARSE VAR remaining part ',' remaining
+      part = STRIP(part)
+      IF part = '' THEN ITERATE
+
+      IF POS('-', part) > 0 THEN DO
+         PARSE VAR part rangeStart '-' rangeEnd
+         IF DATATYPE(rangeStart, 'W') & DATATYPE(rangeEnd, 'W') THEN DO
+            IF value >= rangeStart & value <= rangeEnd THEN RETURN 1
+         END
+      END
+      ELSE DO
+         IF DATATYPE(part, 'W') & value = part THEN RETURN 1
+      END
+   END
+
+   RETURN 0
+
+checkEscalation: PROCEDURE EXPOSE maxFailures notifyFile runDir
+   PARSE ARG agentName, projCode, ticketTitle
+
+   failFile = 'runs/.failures-'agentName
+   consecutiveFails = 0
+
+   IF SysFileExists(failFile) THEN DO
+      prev = CHARIN(failFile, 1, CHARS(failFile))
+      CALL STREAM failFile, 'C', 'CLOSE'
+      prev = STRIP(prev)
+      IF DATATYPE(prev, 'W') THEN consecutiveFails = prev
+   END
+
+   consecutiveFails = consecutiveFails + 1
+
+   CALL SysFileDelete failFile
+   CALL CHAROUT failFile, consecutiveFails
+   CALL STREAM failFile, 'C', 'CLOSE'
+
+   SAY '['agentName'] Consecutive failures:' consecutiveFails '/' maxFailures
+
+   IF consecutiveFails >= maxFailures THEN DO
+      SAY '['agentName'] *** ESCALATION: Agent suspended after' consecutiveFails 'failures ***'
+      CALL logGov 'ESCALATION', projCode, -
+         agentName 'suspended after' consecutiveFails 'consecutive failures. Last task: "'ticketTitle'"'
+
+      entry = DATE('S') TIME() '|' agentName '|' projCode '|' -
+         'Suspended after' consecutiveFails 'failures on "' || ticketTitle || '"' || '0a'x
+      CALL CHAROUT notifyFile, entry, 1 + CHARS(notifyFile)
+      CALL STREAM notifyFile, 'C', 'CLOSE'
+
+      /* Escalate all open tickets for this agent, writing escalation docs */
+      ADDRESS SYSTEM 'fossil ticket list assignee="'agentName'" status=open' -
+         '--format "%u|%t" 2>/dev/null' WITH OUTPUT STEM openTix.
+      emptyLog = .Array~new
+      DO t = 1 TO openTix.0
+         line = STRIP(openTix.t)
+         IF line = '' THEN ITERATE
+         PARSE VAR line tid '|' tTitle
+         tid = STRIP(tid)
+         tTitle = STRIP(tTitle)
+
+         CALL .FossilHelper~ticketChange tid, 'status=escalated'
+
+         /* Write an escalation document for each ticket */
+         escalFile = .EscalationWriter~write( -
+            tTitle, tid, agentName, projCode, -
+            consecutiveFails, emptyLog, .nil, -
+            '', '', -
+            'Agent' agentName 'suspended after' consecutiveFails -
+               'consecutive failures', -
+            'escalations')
+         SAY '[escalation] Wrote:' escalFile
+      END
+      SAY '['agentName'] All open tickets moved to escalated status.'
+
+      CALL .FossilHelper~commitAll -
+         '[escalation] agent:'agentName 'suspended after' consecutiveFails 'failures'
+   END
+   RETURN
+
+/*--------------------------------------------------------------------*/
+/* resetEscalation — clear failure counter when an agent succeeds      */
+/*--------------------------------------------------------------------*/
+resetEscalation: PROCEDURE
+   PARSE ARG agentName
+   failFile = 'runs/.failures-'agentName
+   IF SysFileExists(failFile) THEN CALL SysFileDelete failFile
+   RETURN
+
+/*--------------------------------------------------------------------*/
+/* Quality gates                                                       */
+/*--------------------------------------------------------------------*/
+runQualityGates: PROCEDURE
+   PARSE ARG gateType, projCode, workingDir, config
+
+   IF gateType = '' THEN RETURN 1
+
+   gatePipelineKey = 'governance.gates.'gateType'.pipeline'
+   pipeline = .TomlParser~get(config, gatePipelineKey, '')
+   IF pipeline = '' THEN RETURN 1
+
+   SAY '[gates] Running' gateType 'quality gates:' pipeline
+
+   DO g = 1 TO WORDS(pipeline)
+      gateName = WORD(pipeline, g)
+
+      IF gateName = 'human-approval' THEN DO
+         SAY '[gates] Human approval required — parking.'
+         RETURN 0
+      END
+
+      gateToml = 'agents/'gateName'.toml'
+      IF \SysFileExists(gateToml) THEN DO
+         SAY '[gates] Warning: gate agent' gateName 'not found. Skipping.'
+         ITERATE
+      END
+
+      gateConfig = .TomlParser~parse(gateToml)
+      gateRuntime = .TomlParser~get(gateConfig, 'runtime', 'script')
+      gateScript  = .TomlParser~get(gateConfig, 'script', '')
+
+      gateAdapter = .AgentAdapter~new(gateRuntime, '', workingDir)
+      gateAdapter~scriptPath = gateScript
+
+      SAY '[gates] Running:' gateName
+      gateResult = gateAdapter~run('')
+
+      IF \gateResult['complete'] THEN DO
+         SAY '[gates]' gateName 'FAILED'
+         CALL createTicketsFromOutput gateResult['output'], projCode
+         RETURN 0
+      END
+      SAY '[gates]' gateName 'passed'
+   END
+
+   SAY '[gates] All gates passed.'
+   RETURN 1
+
+/*--------------------------------------------------------------------*/
+/* createStoriesFromOutput — parse ## Story: blocks from CTO output    */
+/*--------------------------------------------------------------------*/
+createStoriesFromOutput: PROCEDURE
+   PARSE ARG output, projCode, parentGoalChain
+   remaining = output
+   created = 0
+
+   storyMap. = ''; storyMap.0 = 0
+   symbolicDeps. = ''; symbolicDeps.0 = 0
+
+   DO WHILE remaining \= ''
+      storyPos = POS('## Story:', remaining)
+      IF storyPos = 0 THEN LEAVE
+      remaining = SUBSTR(remaining, storyPos)
+
+      nextBlock = POS('## ', remaining, 4)
+      IF nextBlock > 0 THEN DO
+         storyBlock = LEFT(remaining, nextBlock - 1)
+         remaining = SUBSTR(remaining, nextBlock)
+      END
+      ELSE DO
+         storyBlock = remaining
+         remaining = ''
+      END
+
+      PARSE VAR storyBlock '## Story:' title '0a'x .
+      title = STRIP(title)
+      IF title = '' THEN ITERATE
+
+      assignee   = extractField(storyBlock, 'assignee')
+      goalChain  = extractField(storyBlock, 'goal_chain')
+      acceptance = extractField(storyBlock, 'acceptance')
+      gateType   = extractField(storyBlock, 'gate_type')
+      depends    = extractField(storyBlock, 'depends')
+      points     = extractField(storyBlock, 'points')
+
+      IF assignee = '' THEN assignee = 'cto'
+
+      IF goalChain = '' & parentGoalChain \= '' THEN
+         goalChain = parentGoalChain
+      ELSE IF parentGoalChain \= '' & LEFT(goalChain, 1) \= 'G' THEN
+         goalChain = parentGoalChain '>' goalChain
+
+      IF gateType = '' THEN gateType = 'code'
+
+      fields = 'type=story' -
+               'assignee='assignee -
+               'project='projCode -
+               'status=open' -
+               'gate_type='gateType
+      IF goalChain \= '' THEN
+         fields = fields 'goal_chain="'goalChain'"'
+      IF acceptance \= '' THEN
+         fields = fields 'acceptance="'acceptance'"'
+
+      CALL .FossilHelper~ticketAdd title, fields
+      SAY '[stories] Created:' title '→' assignee
+      created = created + 1
+
+      newTicketId = getLatestTicketId(title, projCode)
+
+      n = storyMap.0 + 1; storyMap.0 = n
+      storyMap.n.title = title
+      storyMap.n.id = newTicketId
+
+      IF depends \= '' THEN DO
+         sn = symbolicDeps.0 + 1; symbolicDeps.0 = sn
+         symbolicDeps.sn.ticketId = newTicketId
+         symbolicDeps.sn.raw = depends
+      END
+   END
+
+   /* Second pass: resolve symbolic dependencies */
+   DO d = 1 TO symbolicDeps.0
+      ticketId = symbolicDeps.d.ticketId
+      rawDeps = symbolicDeps.d.raw
+      resolvedDeps = ''
+
+      remaining = rawDeps
+      DO WHILE remaining \= ''
+         PARSE VAR remaining oneDep ',' remaining
+         oneDep = STRIP(oneDep)
+         IF oneDep = '' THEN ITERATE
+
+         IF LEFT(oneDep, 6) = 'story:' THEN DO
+            depTitle = STRIP(SUBSTR(oneDep, 7))
+            resolved = 0
+            DO s = 1 TO storyMap.0
+               IF TRANSLATE(storyMap.s.title) = TRANSLATE(depTitle) THEN DO
+                  IF resolvedDeps \= '' THEN resolvedDeps = resolvedDeps','
+                  resolvedDeps = resolvedDeps || storyMap.s.id
+                  resolved = 1
+                  LEAVE
+               END
+            END
+            IF \resolved THEN
+               SAY '[stories] WARNING: Cannot resolve dependency "' || depTitle || '"'
+         END
+         ELSE DO
+            IF resolvedDeps \= '' THEN resolvedDeps = resolvedDeps','
+            resolvedDeps = resolvedDeps || oneDep
+         END
+      END
+
+      IF resolvedDeps \= '' THEN DO
+         CALL .FossilHelper~ticketChange ticketId, 'depends="'resolvedDeps'"'
+         SAY '[stories] Resolved dependencies for ticket' ticketId
+      END
+   END
+
+   RETURN created
+
+/*--------------------------------------------------------------------*/
+/* getLatestTicketId — find the most recently created ticket by title   */
+/*--------------------------------------------------------------------*/
+getLatestTicketId: PROCEDURE
+   PARSE ARG title, projCode
+   cmd = 'fossil ticket list title="'title'" project="'projCode'"' -
+      '--format "%u" --limit 1 2>/dev/null'
+   ADDRESS SYSTEM cmd WITH OUTPUT STEM ids.
+   IF ids.0 = 0 THEN RETURN ''
+   RETURN STRIP(ids.1)
+
+/*--------------------------------------------------------------------*/
+/* extractField — pull "- key: value" from a markdown block            */
+/*--------------------------------------------------------------------*/
+extractField: PROCEDURE
+   PARSE ARG block, key
+   marker = '- 'key':'
+   pos = POS(marker, block)
+   IF pos = 0 THEN RETURN ''
+   chunk = SUBSTR(block, pos + LENGTH(marker))
+   PARSE VAR chunk value '0a'x .
+   RETURN STRIP(value)
+
+/*--------------------------------------------------------------------*/
+/* createTicketsFromOutput — parse Markdown issue blocks into tickets   */
+/*--------------------------------------------------------------------*/
+createTicketsFromOutput: PROCEDURE
+   PARSE ARG output, projCode
+   remaining = output
+
+   DO WHILE remaining \= ''
+      issuePos = POS('## Issue:', remaining)
+      IF issuePos = 0 THEN LEAVE
+      remaining = SUBSTR(remaining, issuePos)
+
+      PARSE VAR remaining '## Issue:' title '0a'x rest
+      title = STRIP(title)
+
+      assignee = ''; severity = ''
+      PARSE VAR rest . '- assignee:' assignee '0a'x .
+      PARSE VAR rest . '- severity:' severity '0a'x .
+      assignee = STRIP(assignee)
+      severity = STRIP(severity)
+
+      IF title \= '' & assignee \= '' THEN DO
+         fields = 'assignee='assignee 'project='projCode 'status=open type=fix'
+         CALL .FossilHelper~ticketAdd title, fields
+         SAY '[tickets] Created fix ticket:' title '→' assignee
+      END
+
+      nextPos = POS('## Issue:', rest)
+      IF nextPos > 0 THEN remaining = SUBSTR(rest, nextPos)
+      ELSE remaining = ''
+   END
+   RETURN
+
+/*--------------------------------------------------------------------*/
+/* updateLearnings — extract key points and append to agent wiki       */
+/*--------------------------------------------------------------------*/
+updateLearnings: PROCEDURE
+   PARSE ARG agentName, output
+   entry = DATE('S') '- Completed a task successfully.'
+   CALL .FossilHelper~wikiAppend 'AgentLearnings/'agentName, entry
+   RETURN
+
+/*--------------------------------------------------------------------*/
+/* cleanupOldFiles — remove files older than N days from a directory   */
+/* Prevents unbounded growth of handoffs/, parked_tasks/, escalations/ */
+/* If suffix is specified (e.g. '.done'), only removes matching files. */
+/*--------------------------------------------------------------------*/
+cleanupOldFiles: PROCEDURE
+   PARSE ARG dir, maxDays, suffix
+   IF \DATATYPE(maxDays, 'W') THEN maxDays = 30
+   IF suffix = '' THEN suffix = '.md'
+
+   /* Use find -mtime to locate old files */
+   cmd = 'find' dir '-maxdepth 1 -name "*'suffix'" -mtime +'maxDays -type f 2>/dev/null'
+   ADDRESS SYSTEM cmd WITH OUTPUT STEM oldFiles.
+
+   IF oldFiles.0 = 0 THEN RETURN
+
+   removed = 0
+   DO i = 1 TO oldFiles.0
+      f = STRIP(oldFiles.i)
+      IF f = '' THEN ITERATE
+      CALL SysFileDelete f
+      removed = removed + 1
+   END
+
+   IF removed > 0 THEN
+      SAY '[cleanup] Removed' removed 'file(s) older than' maxDays 'days from' dir
+   RETURN
+
+/*--------------------------------------------------------------------*/
+/* Cleanup — handle Ctrl-C gracefully                                  */
+/*--------------------------------------------------------------------*/
+cleanup:
+   SAY ''
+   SAY 'Interrupted. Committing partial state...'
+   CALL logGov 'INTERRUPTED', 'all', 'Ctrl-C received'
+   CALL .FossilHelper~commitAll 'interrupted run' DATE('S')
+   EXIT 1

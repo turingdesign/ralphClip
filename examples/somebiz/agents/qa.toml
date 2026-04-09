@@ -1,0 +1,7 @@
+role = "QA Reviewer"
+runtime = "trinity"
+model = "trinity-mini"
+budget_usd = 5.00
+skill = "review-code"
+projects = ["bricksfit"]
+trigger = "after:test-runner"

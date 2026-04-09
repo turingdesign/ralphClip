@@ -1,0 +1,6 @@
+role = "Market Researcher"
+runtime = "gemini"
+model = "gemini-3-flash"
+budget_usd = 0.00
+skill = "market-research"
+projects = ["paddockapp", "sss"]

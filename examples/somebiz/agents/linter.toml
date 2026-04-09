@@ -1,0 +1,6 @@
+role = "Linter"
+runtime = "script"
+script = "scripts/run-phpcs.sh"
+budget_usd = 0.00
+trigger = "after:engineer-php"
+projects = ["bricksfit"]

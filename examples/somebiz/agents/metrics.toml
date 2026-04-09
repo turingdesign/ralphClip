@@ -1,0 +1,6 @@
+role = "Code Metrics Analyst"
+runtime = "rexx"
+script = "scripts/code-metrics.rex"
+budget_usd = 0.00
+trigger = "always"
+projects = ["bricksfit"]

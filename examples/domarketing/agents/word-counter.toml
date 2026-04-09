@@ -1,0 +1,6 @@
+role = "Word Count Checker"
+runtime = "rexx"
+script = "scripts/word-count-checker.rex"
+budget_usd = 0.00
+trigger = "after:seo-writer"
+projects = ["paddockapp", "sss"]
