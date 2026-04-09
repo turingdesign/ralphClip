@@ -313,7 +313,7 @@ DO p = 1 TO projectSections~items
          learnings = .FossilHelper~wikiExport('AgentLearnings/'agentName)
          IF learnings \= '' & learnings \= 'No learnings yet.' THEN
             prompt = prompt || '0a'x || 'Learnings:' || '0a'x || learnings || '0a'x
-         CALL injectHandoffContext ticketId, deps, prompt
+         prompt = injectHandoffContext(ticketId, deps, prompt)
          IF c['agentAllowed'] \= '' THEN DO
             prompt = prompt || '0a'x || 'SCOPE: Only modify:' c['agentAllowed'] || '0a'x
             IF c['agentForbid'] \= '' THEN
@@ -577,7 +577,7 @@ injectHandoffContext: PROCEDURE
    PARSE ARG ticketId, deps, prompt
 
    /* No dependencies = no upstream handoffs to inject */
-   IF deps = '' THEN RETURN
+   IF deps = '' THEN RETURN prompt
 
    /* Resolve dependency ticket IDs to task titles */
    upstreamTasks = ''
@@ -591,11 +591,11 @@ injectHandoffContext: PROCEDURE
       IF depTitle \= '' THEN
          upstreamTasks = upstreamTasks || depTitle || '0a'x
    END
-   IF upstreamTasks = '' THEN RETURN
+   IF upstreamTasks = '' THEN RETURN prompt
 
    /* Scan handoff files, only inject those from upstream tasks */
    ADDRESS SYSTEM 'ls handoffs/*.md 2>/dev/null' WITH OUTPUT STEM hfiles.
-   IF hfiles.0 = 0 THEN RETURN
+   IF hfiles.0 = 0 THEN RETURN prompt
 
    injected = 0
 
@@ -633,7 +633,7 @@ injectHandoffContext: PROCEDURE
 
    IF injected > 0 THEN
       SAY '[handoff] Injected' injected 'upstream handoff(s) into prompt'
-   RETURN
+   RETURN prompt
 
 /*--------------------------------------------------------------------*/
 /* Budget helpers — read/write wiki Budget page                        */
