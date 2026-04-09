@@ -57,10 +57,6 @@ output = 1.50
 input = 0.25
 output = 0.75
 
-[cost_per_million_tokens.minimax]
-input = 0.10
-output = 0.30
-
 [cost_per_million_tokens.trinity-mini]
 input = 0.045
 output = 0.15
@@ -85,7 +81,7 @@ log_dir = "runs"                     # run log directory (unversioned)
 role = "Senior PHP Engineer"         # human-readable role description
 
 # --- Runtime ---
-runtime = "mistral"                  # claude | mistral | gemini | trinity | minimax | script | rexx | bash | oorexx | mcp-bridge
+runtime = "mistral"                  # claude | mistral | gemini | trinity | script | rexx | bash | oorexx | mcp-bridge
 model = "devstral-2"                 # model identifier (ignored for script/rexx)
 script = "scripts/run-phpcs.sh"      # path to script (script/rexx runtimes only)
 
@@ -173,7 +169,6 @@ Current behaviour: logs the would-be MCP JSON-RPC `tools/call` request to `debug
 | `claude` | `claude` | `-p --model <m>` | Parsed from output | `claude-code` |
 | `mistral` | `vibe` | `--prompt <p> --max-price <$>` | Parsed from output | `mistral-vibe` |
 | `trinity` | OpenRouter API via `curl` | N/A (API call) | Parsed from API response | |
-| `minimax` | OpenRouter API via `curl` | N/A (API call) | Parsed from API response | |
 | `gemini` | `gemini` | `-p --output-format json` | Estimated from tokens | `gemini-cli` |
 | `script` | `bash` | N/A | Always $0.00 | `bash` |
 | `rexx` | `rexx` | N/A | Always $0.00 | `oorexx` |

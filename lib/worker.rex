@@ -101,6 +101,7 @@
       adapter = .AgentAdapter~new(currentRuntime, currentModel, agentWorkDir)
       adapter~scriptPath = agentScript
       adapter~ticketId = ticketId
+      adapter~skipPermissions = taskSpec['skipPermissions']
 
       SAY '['agentName'] Attempt' attempt 'of' taskMaxRetries -
          '(adapter:' currentRuntime')'

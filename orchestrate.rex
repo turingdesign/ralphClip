@@ -242,6 +242,7 @@ DO p = 1 TO projectSections~items
       candidate['taskFailAction']  = taskFailAction
       candidate['adapterRuntimes'] = adapterRuntimes
       candidate['fallbackModel']   = .TomlParser~get(ac, 'fallback_model', '')
+      candidate['skipPermissions'] = .TomlParser~get(ac, 'skip_permissions', 0)
 
       scheduler~addCandidate(candidate)
    END /* candidate discovery */
@@ -340,6 +341,7 @@ DO p = 1 TO projectSections~items
          taskSpec['taskFailAction']  = c['taskFailAction']
          taskSpec['adapterRuntimes'] = c['adapterRuntimes']
          taskSpec['fallbackModel']   = c['fallbackModel']
+         taskSpec['skipPermissions'] = c['skipPermissions']
          taskSpec['maxIterations']   = maxIterations
          taskSpec['runDir']          = runDir
          taskSpec['agentConfig']     = c['agentConfig']

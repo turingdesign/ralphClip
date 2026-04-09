@@ -30,15 +30,17 @@
 ::ATTRIBUTE workingDir GET
 ::ATTRIBUTE scriptPath GET
 ::ATTRIBUTE ticketId  GET
+::ATTRIBUTE skipPermissions GET
 
 /*--------------------------------------------------------------------*/
 /* init — construct an adapter for a specific agent                    */
 /*--------------------------------------------------------------------*/
 ::METHOD init
-   EXPOSE runtime model workingDir scriptPath ticketId
+   EXPOSE runtime model workingDir scriptPath ticketId skipPermissions
    USE ARG runtime, model, workingDir
    scriptPath = ''
    ticketId = ''
+   skipPermissions = 0
 
 ::METHOD 'scriptPath='
    EXPOSE scriptPath
@@ -47,6 +49,10 @@
 ::METHOD 'ticketId='
    EXPOSE ticketId
    USE ARG ticketId
+
+::METHOD 'skipPermissions='
+   EXPOSE skipPermissions
+   USE ARG skipPermissions
 
 /*--------------------------------------------------------------------*/
 /* run — dispatch to the correct runtime, return normalised result     */
@@ -66,7 +72,6 @@
       WHEN runtime = 'gemini'       THEN result = self~runGemini(prompt)
       WHEN runtime = 'gemini-cli'   THEN result = self~runGemini(prompt)
       WHEN runtime = 'trinity'      THEN result = self~runTrinity(prompt)
-      WHEN runtime = 'minimax'      THEN result = self~runMinimax(prompt)
       WHEN runtime = 'script'       THEN result = self~runScript(prompt)
       WHEN runtime = 'bash'         THEN result = self~runScript(prompt)
       WHEN runtime = 'rexx'         THEN result = self~runRexx(prompt)
@@ -163,15 +168,18 @@
 /* Uses: claude -p --model <model> < prompt_file                      */
 /*--------------------------------------------------------------------*/
 ::METHOD runClaude PRIVATE
-   EXPOSE model workingDir
+   EXPOSE model workingDir skipPermissions
    USE ARG prompt
 
    tmpFile = self~writeTempPrompt(prompt)
 
+   permFlag = ''
+   IF skipPermissions THEN permFlag = '--dangerously-skip-permissions'
+
    cmdLine = 'cd' workingDir '&&' -
              'claude -p' -
              '--model "' || model || '"' -
-             '--dangerously-skip-permissions' -
+             permFlag -
              '<' tmpFile -
              '2>&1'
 
@@ -391,62 +399,6 @@
          result = self~makeResult(.false, errClass, errMsg, rawOutput, -
                      durationMs, tokenIn, tokenOut)
       END
-   END
-
-   result['cost'] = cost
-   CALL SysFileDelete tmpFile
-   RETURN result
-
-
-/*--------------------------------------------------------------------*/
-/* MiniMax adapter                                                     */
-/* OpenRouter pattern, same as Trinity.                                */
-/*--------------------------------------------------------------------*/
-::METHOD runMinimax PRIVATE
-   EXPOSE model workingDir
-   USE ARG prompt
-
-   tmpFile = self~writeTempPrompt(prompt)
-
-   orModel = 'minimax/' || model
-   cmdLine = 'cd' workingDir '&&' -
-      'curl -s https://openrouter.ai/api/v1/chat/completions' -
-      '-H "Authorization: Bearer $OPENROUTER_API_KEY"' -
-      '-H "Content-Type: application/json"' -
-      '-d "$(jq -n --arg model "' || orModel || '"' -
-      '--rawfile prompt' tmpFile -
-      "'{model: $model, messages: [{role: ""user"", content: $prompt}], max_tokens: 16000}')" -
-      '2>&1'
-
-   cmdLine = 'timeout 300' cmdLine
-
-   CALL TIME 'R'
-   ADDRESS SYSTEM cmdLine WITH OUTPUT STEM out.
-   shellRc = RC
-   elapsed = TIME('E')
-
-   rawOutput = self~stemToString(out.)
-   durationMs = TRUNC(elapsed * 1000)
-
-   output = self~extractJsonField(rawOutput, 'content')
-   IF output = '' THEN output = rawOutput
-
-   tokenOut = self~extractJsonField(rawOutput, 'completion_tokens')
-   tokenIn  = self~extractJsonField(rawOutput, 'prompt_tokens')
-   IF \DATATYPE(tokenOut, 'W') THEN tokenOut = 0
-   IF \DATATYPE(tokenIn, 'W') THEN tokenIn = 0
-
-   cost = FORMAT(tokenIn * 0.0000001 + tokenOut * 0.0000003,, 6)
-   apiError = self~extractJsonField(rawOutput, 'error')
-
-   IF shellRc = 0 & apiError = '' THEN
-      result = self~makeResult(.true, .nil, '', output, -
-                  durationMs, tokenIn, tokenOut)
-   ELSE DO
-      errClass = self~classifyShellError(shellRc, rawOutput || apiError)
-      errMsg = self~firstErrorLine(rawOutput)
-      result = self~makeResult(.false, errClass, errMsg, rawOutput, -
-                  durationMs, tokenIn, tokenOut)
    END
 
    result['cost'] = cost

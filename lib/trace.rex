@@ -268,7 +268,6 @@
       'claude-code',  3.00,  15.00, ,
       'gemini-cli',   0.50,   1.50, ,
       'mistral-vibe', 0.25,   0.75, ,
-      'minimax',      0.10,   0.30, ,
       'trinity-mini', 0.045,  0.15, ,
       'trinity-large', 0.50,  0.90, ,
       'bash',         0.00,   0.00, ,
