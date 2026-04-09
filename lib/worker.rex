@@ -56,6 +56,10 @@
 ::METHOD execute
    EXPOSE taskSpec mutex tracer runId
 
+   /* Trap unexpected errors — prevents silent thread death */
+   SIGNAL ON SYNTAX NAME workerSyntaxError
+   SIGNAL ON ERROR  NAME workerRuntimeError
+
    /* Unpack taskSpec */
    agentName      = taskSpec['agentName']
    agentRuntime   = taskSpec['agentRuntime']
@@ -230,9 +234,50 @@
    outcome['totalCost']   = totalCost
    RETURN outcome
 
+/* Error handlers — catch unexpected crashes in worker threads */
+workerSyntaxError:
+   co = CONDITION('O')
+   errMsg = 'SYNTAX error' co~code ':' co~message
+   SAY '[WORKER CRASH]' taskSpec['agentName'] errMsg
+   outcome = .Directory~new
+   outcome['completed']   = .false
+   outcome['lastResult']  = self~makeCrashResult(errMsg)
+   outcome['attemptLog']  = .Array~new
+   outcome['totalCost']   = 0
+   outcome['adapterUsed'] = taskSpec['agentRuntime']
+   outcome['taskSafeName'] = TRANSLATE(taskSpec['ticketTitle'], '_', ' ')
+   RETURN outcome
+
+workerRuntimeError:
+   co = CONDITION('O')
+   errMsg = 'ERROR condition:' co~message
+   SAY '[WORKER CRASH]' taskSpec['agentName'] errMsg
+   outcome = .Directory~new
+   outcome['completed']   = .false
+   outcome['lastResult']  = self~makeCrashResult(errMsg)
+   outcome['attemptLog']  = .Array~new
+   outcome['totalCost']   = 0
+   outcome['adapterUsed'] = taskSpec['agentRuntime']
+   outcome['taskSafeName'] = TRANSLATE(taskSpec['ticketTitle'], '_', ' ')
+   RETURN outcome
+
 
 /*--------------------------------------------------------------------*/
-/* logOutput — write run output to the agent's log file                */
+/* makeCrashResult — build a fatal result from an unexpected error      */
+/*--------------------------------------------------------------------*/
+::METHOD makeCrashResult PRIVATE
+   USE ARG errMsg
+   result = .Directory~new
+   result['ok']            = .false
+   result['error_class']   = 'fatal'
+   result['error_message'] = errMsg
+   result['output']        = 'Worker thread crashed: ' || errMsg
+   result['duration_ms']   = 0
+   result['token_in']      = 0
+   result['token_out']     = 0
+   result['complete']      = 0
+   result['cost']          = 0
+   RETURN result
 /* Each agent has its own file, so no contention.                      */
 /*--------------------------------------------------------------------*/
 ::METHOD logOutput PRIVATE

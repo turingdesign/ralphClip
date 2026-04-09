@@ -538,9 +538,15 @@
 
 ::METHOD stemToString PRIVATE
    USE ARG lines.
+   maxLen = 524288  /* 512 KB safety limit */
    s = ''
    DO j = 1 TO lines.0
       s = s || lines.j || '0a'x
+      IF LENGTH(s) > maxLen THEN DO
+         s = LEFT(s, maxLen) || '0a'x || -
+            '... (output truncated at 512KB — full output in run log)'
+         LEAVE
+      END
    END
    RETURN s
 

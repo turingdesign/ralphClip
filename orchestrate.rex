@@ -13,6 +13,8 @@
 
 SIGNAL ON HALT NAME cleanup
 
+RALPHCLIP_VERSION = '2.1.0'
+
 /* Resolve paths */
 PARSE SOURCE . . sourceFile
 ralphclipHome = LEFT(sourceFile, LASTPOS('/', sourceFile) - 1)
@@ -66,7 +68,7 @@ runDir = logDir'/'runId
 ADDRESS SYSTEM 'mkdir -p' runDir
 
 SAY '================================================================'
-SAY ' RalphClip —' companyName
+SAY ' RalphClip v'RALPHCLIP_VERSION '—' companyName
 SAY ' Run:' runId
 SAY '================================================================'
 
@@ -74,7 +76,7 @@ SAY '================================================================'
 /* Initialise cost table and tracer                                    */
 /*--------------------------------------------------------------------*/
 costTable = .TraceWriter~buildCostTable(config)
-tracer = .TraceWriter~new(runId, 'traces', costTable)
+tracer = .TraceWriter~new(runId, 'traces', costTable, RALPHCLIP_VERSION)
 tracer~start()
 tracer~span('orchestrator.init', '', .FossilHelper~isoTimestamp(), -
             0, 0, 0, 'ok', '', '', 'Loaded config, initialised tracer')
@@ -481,6 +483,7 @@ ELSE DO
 
    /* Write run summary file */
    summary = 'RalphClip Run Summary' || '0a'x
+   summary = summary || 'Version:    ' RALPHCLIP_VERSION || '0a'x
    summary = summary || 'Run:        ' runId || '0a'x
    summary = summary || 'Company:    ' companyName || '0a'x
    summary = summary || 'Dispatched: ' totalDispatched || '0a'x
@@ -650,23 +653,6 @@ requiresApproval: PROCEDURE
    PARSE ARG ticketType, approvalList
    RETURN (WORDPOS(ticketType, approvalList) > 0)
 
-shouldRun: PROCEDURE
-   PARSE ARG trigger, completedAgents
-   SELECT
-      WHEN trigger = 'always' THEN RETURN 1
-      WHEN trigger = 'manual' THEN RETURN 0
-      WHEN trigger = 'ticket' THEN RETURN 1
-      WHEN LEFT(trigger, 6) = 'after:' THEN DO
-         dep = SUBSTR(trigger, 7)
-         RETURN (WORDPOS(dep, completedAgents) > 0)
-      END
-      WHEN LEFT(trigger, 5) = 'cron:' THEN DO
-         cronExpr = STRIP(SUBSTR(trigger, 6))
-         RETURN matchesCron(cronExpr)
-      END
-      OTHERWISE RETURN 1
-   END
-
 /*--------------------------------------------------------------------*/
 /* matchesCron — check if current time matches a 5-field cron expr     */
 /*--------------------------------------------------------------------*/
@@ -705,6 +691,14 @@ matchesCron: PROCEDURE
 cronFieldMatches: PROCEDURE
    PARSE ARG field, value
 
+   /* Handle */N step on wildcard: */5 means every 5th */
+   IF LEFT(field, 2) = '*/' THEN DO
+      step = SUBSTR(field, 3)
+      IF DATATYPE(step, 'W') & step > 0 THEN
+         RETURN (value // step = 0)
+      RETURN 0
+   END
+
    IF field = '*' THEN RETURN 1
 
    remaining = field
@@ -713,7 +707,19 @@ cronFieldMatches: PROCEDURE
       part = STRIP(part)
       IF part = '' THEN ITERATE
 
-      IF POS('-', part) > 0 THEN DO
+      /* Handle step on range: 1-10/2 */
+      IF POS('/', part) > 0 THEN DO
+         PARSE VAR part rangePart '/' step
+         IF \DATATYPE(step, 'W') | step <= 0 THEN step = 1
+         IF POS('-', rangePart) > 0 THEN DO
+            PARSE VAR rangePart rangeStart '-' rangeEnd
+            IF DATATYPE(rangeStart, 'W') & DATATYPE(rangeEnd, 'W') THEN DO
+               IF value >= rangeStart & value <= rangeEnd THEN
+                  IF (value - rangeStart) // step = 0 THEN RETURN 1
+            END
+         END
+      END
+      ELSE IF POS('-', part) > 0 THEN DO
          PARSE VAR part rangeStart '-' rangeEnd
          IF DATATYPE(rangeStart, 'W') & DATATYPE(rangeEnd, 'W') THEN DO
             IF value >= rangeStart & value <= rangeEnd THEN RETURN 1
@@ -1034,7 +1040,7 @@ cleanupOldFiles: PROCEDURE
    IF suffix = '' THEN suffix = '.md'
 
    /* Use find -mtime to locate old files */
-   cmd = 'find' dir '-maxdepth 1 -name "*'suffix'" -mtime +'maxDays -type f 2>/dev/null'
+   cmd = 'find' dir '-maxdepth 1 -name "*' || suffix || '" -mtime +' || maxDays '-type f 2>/dev/null'
    ADDRESS SYSTEM cmd WITH OUTPUT STEM oldFiles.
 
    IF oldFiles.0 = 0 THEN RETURN

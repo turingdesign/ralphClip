@@ -44,8 +44,9 @@
    EXPOSE runId tracesDir traceFile startTime costTable ,
           totalTokenIn totalTokenOut totalCost ,
           tasksTotal tasksOk tasksParked tasksSkipped adaptersUsed ,
-          spanBuffer
-   USE ARG runId, tracesDir, costTable
+          spanBuffer version
+   USE ARG runId, tracesDir, costTable, version
+   IF ARG(4, 'O') THEN version = 'unknown'
 
    traceFile = tracesDir'/'runId'.md'
    startTime = ''
@@ -152,7 +153,7 @@
 /* finish — assemble header + buffered spans, single atomic write      */
 /*--------------------------------------------------------------------*/
 ::METHOD finish
-   EXPOSE traceFile runId startTime spanBuffer ,
+   EXPOSE traceFile runId startTime spanBuffer version ,
           totalTokenIn totalTokenOut totalCost ,
           tasksTotal tasksOk tasksParked tasksSkipped adaptersUsed
 
@@ -168,6 +169,7 @@
 
    /* Assemble complete file in memory */
    doc = '---' || '0a'x
+   doc = doc || 'ralphclip_version: "'version'"' || '0a'x
    doc = doc || 'run_id: "'runId'"' || '0a'x
    doc = doc || 'start: "'startTime'"' || '0a'x
    doc = doc || 'end: "'endTime'"' || '0a'x
