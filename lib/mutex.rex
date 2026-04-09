@@ -127,3 +127,38 @@
 
    newVal = FORMAT(oldVal + addCost,, 4)
    RETURN before || marker || ' ' || newVal || '0a'x || afterLine
+
+/*--------------------------------------------------------------------*/
+/* Budget read operations — guarded to prevent read-during-write       */
+/*--------------------------------------------------------------------*/
+
+::METHOD readBudgetSpent GUARDED
+   page = .FossilHelper~wikiExport('Budget')
+   IF page = '' THEN RETURN 0
+   spentPos = POS('spent:', page)
+   IF spentPos = 0 THEN RETURN 0
+   PARSE VAR page . 'spent:' spent .
+   IF DATATYPE(STRIP(spent), 'N') THEN RETURN STRIP(spent)
+   RETURN 0
+
+::METHOD readProjectSpend GUARDED
+   USE ARG projCode
+   page = .FossilHelper~wikiExport('Budget')
+   marker = projCode || ':'
+   pos = POS(marker, page)
+   IF pos = 0 THEN RETURN 0
+   chunk = SUBSTR(page, pos + LENGTH(marker))
+   PARSE VAR chunk spent .
+   IF DATATYPE(STRIP(spent), 'N') THEN RETURN STRIP(spent)
+   RETURN 0
+
+::METHOD readAgentSpend GUARDED
+   USE ARG agentName
+   page = .FossilHelper~wikiExport('Budget')
+   marker = agentName || ':'
+   pos = POS(marker, page)
+   IF pos = 0 THEN RETURN 0
+   chunk = SUBSTR(page, pos + LENGTH(marker))
+   PARSE VAR chunk spent .
+   IF DATATYPE(STRIP(spent), 'N') THEN RETURN STRIP(spent)
+   RETURN 0

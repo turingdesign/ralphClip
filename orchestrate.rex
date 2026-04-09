@@ -106,7 +106,7 @@ END
 /*--------------------------------------------------------------------*/
 /* Company budget gate                                                 */
 /*--------------------------------------------------------------------*/
-companySpent = readBudgetSpent()
+companySpent = mutex~readBudgetSpent()
 CALL logGov 'RUN START', 'all', 'orchestrate.rex triggered'
 
 IF companySpent >= companyCap THEN DO
@@ -143,7 +143,7 @@ DO p = 1 TO projectSections~items
       projDir = VALUE('HOME',, 'ENVIRONMENT') || SUBSTR(projDir, 2)
 
    /* Project budget gate */
-   projSpent = readProjectSpend(projCode)
+   projSpent = mutex~readProjectSpend(projCode)
    IF projSpent >= projCap & projCap > 0 THEN DO
       CALL logGov 'BUDGET HOLD', projCode, -
          'Project budget reached:' projSpent '/' projCap
@@ -202,7 +202,7 @@ DO p = 1 TO projectSections~items
 
       /* Static eligibility checks */
       IF agentProjects \= '' & WORDPOS(projCode, agentProjects) = 0 THEN ITERATE
-      agentSpent = readAgentSpend(agentName)
+      agentSpent = mutex~readAgentSpend(agentName)
       IF agentSpent >= agentBudget & agentBudget > 0 THEN DO
          CALL logGov 'BUDGET HOLD', projCode, -
             agentName 'budget reached:' agentSpent '/' agentBudget
@@ -305,8 +305,8 @@ DO p = 1 TO projectSections~items
          prompt = prompt || '0a'x
          prompt = prompt || 'Role:' c['agentRole'] || '0a'x
          IF goalChain \= '' THEN
-            prompt = prompt || 'Goal ancestry:' goalChain || '0a'x
-         prompt = prompt || 'Task:' ticketTitle || '0a'x
+            prompt = prompt || 'Goal ancestry: <goal>' || goalChain || '</goal>' || '0a'x
+         prompt = prompt || 'Task: <task>' || ticketTitle || '</task>' || '0a'x
          IF c['agentCtx'] \= '' THEN
             prompt = prompt || '0a'x || c['agentCtx'] || '0a'x
          IF projCtx \= '' THEN
@@ -636,40 +636,6 @@ injectHandoffContext: PROCEDURE
    IF injected > 0 THEN
       SAY '[handoff] Injected' injected 'upstream handoff(s) into prompt'
    RETURN prompt
-
-/*--------------------------------------------------------------------*/
-/* Budget helpers — read/write wiki Budget page                        */
-/*--------------------------------------------------------------------*/
-readBudgetSpent: PROCEDURE
-   page = .FossilHelper~wikiExport('Budget')
-   IF page = '' THEN RETURN 0
-   spentPos = POS('spent:', page)
-   IF spentPos = 0 THEN RETURN 0
-   PARSE VAR page . 'spent:' spent .
-   IF DATATYPE(STRIP(spent), 'N') THEN RETURN STRIP(spent)
-   RETURN 0
-
-readProjectSpend: PROCEDURE
-   PARSE ARG projCode
-   page = .FossilHelper~wikiExport('Budget')
-   marker = projCode || ':'
-   pos = POS(marker, page)
-   IF pos = 0 THEN RETURN 0
-   chunk = SUBSTR(page, pos + LENGTH(marker))
-   PARSE VAR chunk spent .
-   IF DATATYPE(STRIP(spent), 'N') THEN RETURN STRIP(spent)
-   RETURN 0
-
-readAgentSpend: PROCEDURE
-   PARSE ARG agentName
-   page = .FossilHelper~wikiExport('Budget')
-   marker = agentName || ':'
-   pos = POS(marker, page)
-   IF pos = 0 THEN RETURN 0
-   chunk = SUBSTR(page, pos + LENGTH(marker))
-   PARSE VAR chunk spent .
-   IF DATATYPE(STRIP(spent), 'N') THEN RETURN STRIP(spent)
-   RETURN 0
 
 /*--------------------------------------------------------------------*/
 /* Governance helpers                                                  */

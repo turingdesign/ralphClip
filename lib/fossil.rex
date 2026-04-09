@@ -53,16 +53,16 @@
 
 /*--------------------------------------------------------------------*/
 /* safeTmpFile — generate a collision-resistant temp file path          */
-/* Uses mktemp if available, falls back to RANDOM + timestamp.        */
+/* Requires mktemp (POSIX). Fails fast if unavailable.                */
 /*--------------------------------------------------------------------*/
 ::METHOD safeTmpFile CLASS
    USE ARG prefix
    IF prefix = '' THEN prefix = 'ralphclip'
    ADDRESS SYSTEM 'mktemp /tmp/'prefix'_XXXXXXXX.md 2>/dev/null' WITH OUTPUT STEM mk.
    IF mk.0 > 0 & STRIP(mk.1) \= '' THEN RETURN STRIP(mk.1)
-   /* Fallback: timestamp + random */
-   ts = TRANSLATE(TIME(), '', ':')
-   RETURN '/tmp/'prefix'_'DATE('S')ts'_'RANDOM(100000)'.md'
+   /* mktemp unavailable — fatal error rather than unsafe fallback */
+   SAY '[FATAL] mktemp is required but not available. Install coreutils.'
+   RAISE SYNTAX 40.900 ARRAY('mktemp not available — cannot create safe temp files')
 
 /*--------------------------------------------------------------------*/
 /* wikiExport — read a wiki page and return its content as a string     */

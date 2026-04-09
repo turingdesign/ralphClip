@@ -342,13 +342,15 @@
    END
 
    cmdLine = 'cd' workingDir '&&' -
+      'printf "header = \\"Authorization: Bearer %s\\"" "$OPENROUTER_API_KEY"' -
+      '>' tmpFile'.hdr &&' -
       'curl -s https://openrouter.ai/api/v1/chat/completions' -
-      '-H "Authorization: Bearer $OPENROUTER_API_KEY"' -
+      '-K' tmpFile'.hdr' -
       '-H "Content-Type: application/json"' -
       '-d "$(jq -n --arg model "' || orModel || '"' -
       '--rawfile prompt' tmpFile -
       "'{model: $model, messages: [{role: ""user"", content: $prompt}], max_tokens: 16000}')" -
-      '2>&1'
+      '2>&1; rm -f' tmpFile'.hdr'
 
    cmdLine = 'timeout 600' cmdLine
 
