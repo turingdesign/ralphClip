@@ -222,7 +222,7 @@
    tmpFile = self~writeTempPrompt(prompt)
 
    cmdLine = 'cd' workingDir '&&' -
-             'vibe --prompt "$(cat' tmpFile ')"' -
+             'vibe --prompt-file' tmpFile -
              '--max-turns 50' -
              '--max-price 0.50' -
              '2>&1'
@@ -275,8 +275,8 @@
    tmpFile = self~writeTempPrompt(prompt)
 
    cmdLine = 'cd' workingDir '&&' -
-             'gemini -p "$(cat' tmpFile ')"' -
-             '--yolo' -
+             'gemini --yolo' -
+             '<' tmpFile -
              '2>&1'
 
    cmdLine = 'timeout 300' cmdLine
