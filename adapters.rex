@@ -183,39 +183,12 @@
              '<' tmpFile -
              '2>&1'
 
-   cmdLine = 'timeout 600' cmdLine  /* 10 minute hard kill */
+   result = self~runCliCommand(cmdLine, tmpFile, 600)
 
-   CALL TIME 'R'
-   ADDRESS SYSTEM cmdLine WITH OUTPUT STEM out.
-   shellRc = RC
-   elapsed = TIME('E')
-
-   output = self~stemToString(out.)
-   durationMs = TRUNC(elapsed * 1000)
-
-   cost = self~parseCostFromOutput(output, 'cost: $')
-   tokenIn  = self~parseIntFromOutput(output, 'Input tokens:')
-   tokenOut = self~parseIntFromOutput(output, 'Output tokens:')
-
-   IF shellRc = 0 THEN DO
-      semantic = self~classifyOutputQuality(output)
-      IF semantic \= '' THEN
-         result = self~makeResult(.false, 'semantic', -
-                     'Suspiciously short or empty output', output, -
-                     durationMs, tokenIn, tokenOut)
-      ELSE
-         result = self~makeResult(.true, .nil, '', output, -
-                     durationMs, tokenIn, tokenOut)
-   END
-   ELSE DO
-      errClass = self~classifyShellError(shellRc, output)
-      errMsg = self~firstErrorLine(output)
-      result = self~makeResult(.false, errClass, errMsg, output, -
-                  durationMs, tokenIn, tokenOut)
-   END
-
-   result['cost'] = cost
-   CALL SysFileDelete tmpFile
+   /* Claude reports cost and tokens in its output */
+   result['cost']      = self~parseCostFromOutput(result['output'], 'cost: $')
+   result['token_in']  = self~parseIntFromOutput(result['output'], 'Input tokens:')
+   result['token_out'] = self~parseIntFromOutput(result['output'], 'Output tokens:')
    RETURN result
 
 
@@ -235,40 +208,13 @@
              '--max-price 0.50' -
              '2>&1'
 
-   cmdLine = 'timeout 300' cmdLine
+   result = self~runCliCommand(cmdLine, tmpFile, 300)
 
-   CALL TIME 'R'
-   ADDRESS SYSTEM cmdLine WITH OUTPUT STEM out.
-   shellRc = RC
-   elapsed = TIME('E')
-
-   output = self~stemToString(out.)
-   durationMs = TRUNC(elapsed * 1000)
-
-   cost = self~parseCostFromOutput(output, 'Total cost: $')
-   IF cost = 0 THEN cost = self~parseCostFromOutput(output, 'cost: $')
-   tokenIn  = self~parseIntFromOutput(output, 'Input tokens:')
-   tokenOut = self~parseIntFromOutput(output, 'Output tokens:')
-
-   IF shellRc = 0 THEN DO
-      semantic = self~classifyOutputQuality(output)
-      IF semantic \= '' THEN
-         result = self~makeResult(.false, 'semantic', -
-                     'Suspiciously short or empty output', output, -
-                     durationMs, tokenIn, tokenOut)
-      ELSE
-         result = self~makeResult(.true, .nil, '', output, -
-                     durationMs, tokenIn, tokenOut)
-   END
-   ELSE DO
-      errClass = self~classifyShellError(shellRc, output)
-      errMsg = self~firstErrorLine(output)
-      result = self~makeResult(.false, errClass, errMsg, output, -
-                  durationMs, tokenIn, tokenOut)
-   END
-
-   result['cost'] = cost
-   CALL SysFileDelete tmpFile
+   result['cost'] = self~parseCostFromOutput(result['output'], 'Total cost: $')
+   IF result['cost'] = 0 THEN
+      result['cost'] = self~parseCostFromOutput(result['output'], 'cost: $')
+   result['token_in']  = self~parseIntFromOutput(result['output'], 'Input tokens:')
+   result['token_out'] = self~parseIntFromOutput(result['output'], 'Output tokens:')
    RETURN result
 
 
@@ -287,40 +233,13 @@
              '<' tmpFile -
              '2>&1'
 
-   cmdLine = 'timeout 300' cmdLine
+   result = self~runCliCommand(cmdLine, tmpFile, 300)
 
-   CALL TIME 'R'
-   ADDRESS SYSTEM cmdLine WITH OUTPUT STEM out.
-   shellRc = RC
-   elapsed = TIME('E')
-
-   output = self~stemToString(out.)
-   durationMs = TRUNC(elapsed * 1000)
-
-   words = WORDS(output)
-   tokenOut = TRUNC(words * 1.3)
-   tokenIn  = 0
-   cost = self~estimateTokenCost(output, 0.000000075)
-
-   IF shellRc = 0 THEN DO
-      semantic = self~classifyOutputQuality(output)
-      IF semantic \= '' THEN
-         result = self~makeResult(.false, 'semantic', -
-                     'Suspiciously short or empty output', output, -
-                     durationMs, tokenIn, tokenOut)
-      ELSE
-         result = self~makeResult(.true, .nil, '', output, -
-                     durationMs, tokenIn, tokenOut)
-   END
-   ELSE DO
-      errClass = self~classifyShellError(shellRc, output)
-      errMsg = self~firstErrorLine(output)
-      result = self~makeResult(.false, errClass, errMsg, output, -
-                  durationMs, tokenIn, tokenOut)
-   END
-
-   result['cost'] = cost
-   CALL SysFileDelete tmpFile
+   /* Gemini doesn't report tokens — estimate from word count */
+   words = WORDS(result['output'])
+   result['token_out'] = TRUNC(words * 1.3)
+   result['token_in']  = 0
+   result['cost'] = self~estimateTokenCost(result['output'], 0.000000075)
    RETURN result
 
 
@@ -528,6 +447,57 @@
 /*--------------------------------------------------------------------*/
 /* Utility methods                                                     */
 /*--------------------------------------------------------------------*/
+
+/*--------------------------------------------------------------------*/
+/* runCliCommand — shared template for all CLI-based adapters          */
+/*                                                                     */
+/* Handles: temp file lifecycle, timing, output collection, error      */
+/* classification, semantic quality check, and result construction.    */
+/*                                                                     */
+/* Arguments:                                                          */
+/*   cmdLine    — the shell command to execute (without timeout)       */
+/*   tmpFile    — temp file to clean up after execution                */
+/*   timeoutSec — hard kill timeout in seconds                        */
+/*                                                                     */
+/* Returns: standardised result Directory with ok, output, duration,   */
+/*          error_class, error_message, token_in, token_out, cost.     */
+/*          Caller should override token_in/token_out/cost if the      */
+/*          adapter can parse them from the output.                    */
+/*--------------------------------------------------------------------*/
+::METHOD runCliCommand PRIVATE
+   USE ARG cmdLine, tmpFile, timeoutSec
+
+   IF \DATATYPE(timeoutSec, 'W') THEN timeoutSec = 300
+   cmdLine = 'timeout' timeoutSec cmdLine
+
+   CALL TIME 'R'
+   ADDRESS SYSTEM cmdLine WITH OUTPUT STEM out.
+   shellRc = RC
+   elapsed = TIME('E')
+
+   output = self~stemToString(out.)
+   durationMs = TRUNC(elapsed * 1000)
+
+   IF shellRc = 0 THEN DO
+      semantic = self~classifyOutputQuality(output)
+      IF semantic \= '' THEN
+         result = self~makeResult(.false, 'semantic', -
+                     'Suspiciously short or empty output', output, -
+                     durationMs, 0, 0)
+      ELSE
+         result = self~makeResult(.true, .nil, '', output, -
+                     durationMs, 0, 0)
+   END
+   ELSE DO
+      errClass = self~classifyShellError(shellRc, output)
+      errMsg = self~firstErrorLine(output)
+      result = self~makeResult(.false, errClass, errMsg, output, -
+                  durationMs, 0, 0)
+   END
+
+   result['cost'] = 0
+   CALL SysFileDelete tmpFile
+   RETURN result
 
 ::METHOD writeTempPrompt PRIVATE
    USE ARG prompt

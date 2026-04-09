@@ -39,10 +39,16 @@ IF \(.FossilHelper~preflight()) THEN EXIT 1
 /*--------------------------------------------------------------------*/
 /* Configuration                                                       */
 /*--------------------------------------------------------------------*/
-IF ARG() > 0 THEN
-   companyToml = ARG(1)
-ELSE
-   companyToml = 'company.toml'
+companyToml = 'company.toml'
+dryRun = 0
+preflightMode = 0
+
+DO i = 1 TO ARG()
+   a = ARG(i)
+   IF a = '--dry-run' THEN dryRun = 1
+   ELSE IF a = '--preflight' THEN preflightMode = 1
+   ELSE companyToml = a
+END
 
 IF \SysFileExists(companyToml) THEN DO
    SAY '[FATAL] Cannot find' companyToml
@@ -70,6 +76,7 @@ ADDRESS SYSTEM 'mkdir -p' runDir
 SAY '================================================================'
 SAY ' RalphClip v'RALPHCLIP_VERSION '—' companyName
 SAY ' Run:' runId
+IF dryRun THEN SAY ' Mode: DRY RUN (no agents will be dispatched)'
 SAY '================================================================'
 
 /*--------------------------------------------------------------------*/
@@ -83,6 +90,124 @@ tracer~span('orchestrator.init', '', .FossilHelper~isoTimestamp(), -
 
 /* Fossil mutex for concurrent access */
 mutex = .FossilMutex~new()
+
+/*--------------------------------------------------------------------*/
+/* Extended preflight: verify all agent runtimes and working dirs      */
+/*--------------------------------------------------------------------*/
+IF preflightMode THEN DO
+   SAY ''
+   SAY '--- Extended Preflight ---'
+   SAY ''
+   errors = 0
+
+   /* Check agent configs */
+   ADDRESS SYSTEM 'ls agents/*.toml 2>/dev/null' WITH OUTPUT STEM pfAgents.
+   IF pfAgents.0 = 0 THEN DO
+      SAY '[preflight] WARNING: No agent TOML files found in agents/'
+      errors = errors + 1
+   END
+   ELSE DO a = 1 TO pfAgents.0
+      af = STRIP(pfAgents.a)
+      IF af = '' THEN ITERATE
+      ac = .TomlParser~parse(af)
+      aName = FILESPEC('N', af)
+      aName = LEFT(aName, LASTPOS('.', aName) - 1)
+      aRuntime = .TomlParser~get(ac, 'runtime', 'claude')
+      aScript  = .TomlParser~get(ac, 'script', '')
+      aWorkDir = .TomlParser~get(ac, 'working_dir', '')
+
+      /* Check runtime binary */
+      SELECT
+         WHEN aRuntime = 'claude' | aRuntime = 'claude-code' THEN DO
+            ADDRESS SYSTEM 'which claude 2>/dev/null' WITH OUTPUT STEM w.
+            IF w.0 = 0 THEN DO
+               SAY '[preflight] FAIL:' aName '— claude binary not found'
+               errors = errors + 1
+            END
+            ELSE SAY '[preflight] OK:' aName '— claude found at' STRIP(w.1)
+         END
+         WHEN aRuntime = 'mistral' | aRuntime = 'mistral-vibe' THEN DO
+            ADDRESS SYSTEM 'which vibe 2>/dev/null' WITH OUTPUT STEM w.
+            IF w.0 = 0 THEN DO
+               SAY '[preflight] FAIL:' aName '— vibe binary not found'
+               errors = errors + 1
+            END
+            ELSE SAY '[preflight] OK:' aName '— vibe found at' STRIP(w.1)
+         END
+         WHEN aRuntime = 'gemini' | aRuntime = 'gemini-cli' THEN DO
+            ADDRESS SYSTEM 'which gemini 2>/dev/null' WITH OUTPUT STEM w.
+            IF w.0 = 0 THEN DO
+               SAY '[preflight] FAIL:' aName '— gemini binary not found'
+               errors = errors + 1
+            END
+            ELSE SAY '[preflight] OK:' aName '— gemini found at' STRIP(w.1)
+         END
+         WHEN aRuntime = 'trinity' THEN DO
+            ADDRESS SYSTEM 'which curl 2>/dev/null' WITH OUTPUT STEM w.
+            IF w.0 = 0 THEN DO
+               SAY '[preflight] FAIL:' aName '— curl not found (required for OpenRouter)'
+               errors = errors + 1
+            END
+            ELSE DO
+               orKey = VALUE('OPENROUTER_API_KEY',, 'ENVIRONMENT')
+               IF orKey = '' THEN DO
+                  SAY '[preflight] FAIL:' aName '— OPENROUTER_API_KEY not set'
+                  errors = errors + 1
+               END
+               ELSE SAY '[preflight] OK:' aName '— curl + OPENROUTER_API_KEY present'
+            END
+         END
+         WHEN aRuntime = 'script' | aRuntime = 'bash' THEN DO
+            IF aScript \= '' & \SysFileExists(aScript) THEN DO
+               SAY '[preflight] FAIL:' aName '— script not found:' aScript
+               errors = errors + 1
+            END
+            ELSE SAY '[preflight] OK:' aName '— script runtime'
+         END
+         WHEN aRuntime = 'rexx' | aRuntime = 'oorexx' THEN DO
+            IF aScript \= '' & \SysFileExists(aScript) THEN DO
+               SAY '[preflight] FAIL:' aName '— rexx script not found:' aScript
+               errors = errors + 1
+            END
+            ELSE SAY '[preflight] OK:' aName '— rexx runtime'
+         END
+         OTHERWISE SAY '[preflight] WARN:' aName '— unknown runtime:' aRuntime
+      END
+
+      /* Check working directory */
+      IF aWorkDir \= '' THEN DO
+         IF LEFT(aWorkDir, 1) = '~' THEN
+            aWorkDir = VALUE('HOME',, 'ENVIRONMENT') || SUBSTR(aWorkDir, 2)
+         ADDRESS SYSTEM 'test -d "' || aWorkDir || '"'
+         IF RC \= 0 THEN DO
+            SAY '[preflight] FAIL:' aName '— working_dir does not exist:' aWorkDir
+            errors = errors + 1
+         END
+      END
+   END
+
+   /* Check project working dirs */
+   projectSections = .TomlParser~sections(config, 'projects')
+   DO p = 1 TO projectSections~items
+      projKey = projectSections[p]
+      projDir = .TomlParser~get(config, projKey'.working_dir', '.')
+      IF LEFT(projDir, 1) = '~' THEN
+         projDir = VALUE('HOME',, 'ENVIRONMENT') || SUBSTR(projDir, 2)
+      ADDRESS SYSTEM 'test -d "' || projDir || '"'
+      IF RC \= 0 THEN DO
+         SAY '[preflight] FAIL: project' projKey '— working_dir does not exist:' projDir
+         errors = errors + 1
+      END
+      ELSE SAY '[preflight] OK: project' projKey '— working_dir exists'
+   END
+
+   SAY ''
+   IF errors = 0 THEN
+      SAY '[preflight] All checks passed.'
+   ELSE
+      SAY '[preflight]' errors 'check(s) failed.'
+   EXIT errors
+END
 
 /*--------------------------------------------------------------------*/
 /* Create required directories                                         */
@@ -367,6 +492,21 @@ DO p = 1 TO projectSections~items
          dispatchQueue~append(taskSpec)
       END /* wave plan */
 
+      /* -- DRY RUN: print plan and release tickets, skip dispatch -- */
+      IF dryRun THEN DO
+         IF dispatchQueue~items > 0 THEN DO
+            SAY '[dry-run] Wave' w 'would dispatch' dispatchQueue~items 'agent(s):'
+            DO i = 1 TO dispatchQueue~items
+               ts = dispatchQueue[i]
+               SAY '[dry-run]   'ts['agentName'] '→ "'ts['ticketTitle']'"' -
+                  '(runtime:' ts['agentRuntime']', gate:' ts['gateType']')'
+               /* Release the claimed ticket back to open */
+               mutex~ticketChange(ts['ticketId'], 'status=open')
+            END
+         END
+         ITERATE  /* skip to next wave */
+      END
+
       /* -- WAVE EXECUTE: parallel dispatch -- */
       asyncMessages = .Array~new
       IF dispatchQueue~items > 0 THEN DO
@@ -424,7 +564,23 @@ DO p = 1 TO projectSections~items
             END
          END
          ELSE DO
-            IF lastResult \= .nil & lastResult['error_class'] \= 'fatal' THEN DO
+            /* Handle missing result first — worker crashed without output */
+            IF lastResult = .nil THEN DO
+               SAY '['agentName'] No result returned — worker may have crashed'
+               CALL logGov 'WORKER CRASH', projCode, agentName '→ "'ticketTitle'" (nil result)'
+               mutex~ticketChange(ticketId, 'status=open')
+               totalFailed = totalFailed + 1
+            END
+            /* Fatal errors are always parked immediately */
+            ELSE IF lastResult['error_class'] = 'fatal' THEN DO
+               CALL parkTask ticketTitle, attemptLog~items, adapterUsed, -
+                  lastResult, attemptLog, ac, agentName
+               mutex~commitWithTag('[parked] task:'ticketTitle -
+                  'reason:fatal run:'runId, 'parked:'taskSafeName)
+               totalParked = totalParked + 1
+            END
+            /* Non-fatal failures: honour the agent's fail_action */
+            ELSE DO
                SELECT
                   WHEN failAction = 'park' THEN DO
                      CALL parkTask ticketTitle, taskMaxRetries, adapterUsed, -
@@ -455,17 +611,6 @@ DO p = 1 TO projectSections~items
                   END
                END
                CALL checkEscalation agentName, projCode, ticketTitle
-            END
-            ELSE IF lastResult \= .nil & lastResult['error_class'] = 'fatal' THEN DO
-               CALL parkTask ticketTitle, attemptLog~items, adapterUsed, -
-                  lastResult, attemptLog, ac, agentName
-               mutex~commitWithTag('[parked] task:'ticketTitle -
-                  'reason:fatal run:'runId, 'parked:'taskSafeName)
-               totalParked = totalParked + 1
-            END
-            ELSE DO
-               mutex~ticketChange(ticketId, 'status=open')
-               totalFailed = totalFailed + 1
             END
          END
       END /* wave commit */

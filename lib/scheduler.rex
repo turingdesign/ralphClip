@@ -120,8 +120,16 @@
       IF thisWave~items > 0 THEN
          waves~append(thisWave)
 
-      /* Simulate completions: agents in this wave will complete,
-         so add them to currentCompleted for the next wave */
+      /* OPTIMISTIC SCHEDULING: We assume all agents in this wave will
+         succeed, so we add them to currentCompleted to unblock the next
+         wave's after: triggers. If a wave-1 agent actually fails,
+         wave-2 agents that depend on it via after: will still be
+         scheduled and dispatched. The orchestrator's dependency check
+         (ticket-level 'depends' field) provides the real safety net —
+         ticket deps are checked against actual Fossil status at claim
+         time. The after: trigger is a scheduling hint, not a hard gate.
+         This is by design: it avoids stalling the entire pipeline when
+         a non-critical agent fails. */
       DO i = 1 TO thisWave~items
          currentCompleted = currentCompleted thisWave[i]['agentName']
       END
