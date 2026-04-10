@@ -110,6 +110,7 @@ my-company/
 - [Creating ooRexx Agents](docs/CREATING-AGENTS.md) — write your own analysis agents
 - [Governance Model](docs/GOVERNANCE.md) — budgets, approvals, gates, rollback, escalation
 - [TOML Configuration Reference](docs/CONFIG-REFERENCE.md) — every config option explained
+- [Skills Library](skills/README.md) — 24 reusable prompt skills across marketing, WordPress, Vue/PWA, and general development
 
 ## CLI Usage
 
