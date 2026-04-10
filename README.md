@@ -47,31 +47,42 @@ Non-AI runtimes (no install needed):
 
 ## Quick Start
 
+Three ways to set up, from fastest to most thorough:
+
+**Option A: Basic setup (bash, minimal prompts)**
 ```bash
-# 1. Create a project directory
 mkdir my-company && cd my-company
-
-# 2. Run the setup script
 bash /path/to/ralphclip/setup.sh
+```
 
-# 3. Follow the prompts to configure your company, projects, and agents
+**Option B: Interactive wizard (ooRexx, no AI needed)**
+```bash
+mkdir my-company && cd my-company
+bash /path/to/ralphclip/setup.sh              # scaffold Fossil repo first
+cd workspace
+rexx /path/to/ralphclip/setup-wizard.rex      # configure agents, skills, budgets, gates
+```
 
-# 4. Seed your first goal
-fossil wiki commit "Goals/G001" < my-first-goal.md
+**Option C: AI-powered planning session (Claude Code)**
+```bash
+mkdir my-company && cd my-company
+bash /path/to/ralphclip/setup.sh              # scaffold Fossil repo first
+cd workspace
+bash /path/to/ralphclip/plan.sh               # Claude designs your org, agents, and config
+```
 
-# 5. Create your first epic ticket
-fossil ticket add type=epic title="Build the thing" goal_id=G001 assignee=cto status=open
-
-# 6. Verify your setup
+**Then, regardless of which option you used:**
+```bash
+# Verify your setup
 rexx /path/to/ralphclip/orchestrate.rex --preflight
 
-# 7. Preview what would run (no agents dispatched, no money spent)
+# Preview what would run (no agents dispatched, no money spent)
 rexx /path/to/ralphclip/orchestrate.rex --dry-run
 
-# 8. Run the orchestrator
+# Run the orchestrator
 rexx /path/to/ralphclip/orchestrate.rex
 
-# 9. Open the dashboard
+# Open the dashboard
 fossil ui
 ```
 
