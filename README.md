@@ -126,7 +126,18 @@ my-company/
 ## CLI Usage
 
 ```bash
+# Orchestration
 rexx orchestrate.rex [company.toml] [--dry-run] [--preflight]
+
+# Setup & configuration
+bash setup.sh                        # bootstrap Fossil repo + minimal config
+rexx setup-wizard.rex                # interactive full company setup (no AI)
+bash plan.sh                         # Claude-powered planning session
+
+# Day-to-day management
+rexx add-project.rex [company.toml]  # add a project to an existing company
+rexx add-agent.rex [company.toml]    # add an agent to an existing company
+rexx review.rex [command]            # human review queue (escalations, approvals, parked tasks)
 ```
 
 | Flag | Purpose |
