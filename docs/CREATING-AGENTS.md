@@ -14,6 +14,14 @@ Use an ooRexx agent when the task:
 
 Use a **bash script** agent instead when you are just wrapping an external tool (phpcs, phpunit, rsync, curl). Use an **AI agent** when the task requires reasoning, creativity, or understanding natural language.
 
+> **Quick path:** To add any type of agent (AI, script, or ooRexx) interactively:
+> ```bash
+> rexx /path/to/ralphclip/add-agent.rex
+> ```
+> This walks you through runtime selection, skill assignment from the [Skills Library](../skills/README.md), budget, triggers, and project assignment. It creates the agent TOML and placeholder scripts automatically.
+>
+> The rest of this document explains how to write custom ooRexx analysis agents by hand.
+
 ## The Agent Contract
 
 Every ooRexx agent must:

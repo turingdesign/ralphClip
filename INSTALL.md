@@ -177,15 +177,29 @@ export PATH="$RALPHCLIP_HOME:$PATH"
 
 ## 7. Next Steps
 
-You're ready. Follow the [Tutorial](docs/TUTORIAL.md) to set up your first company:
+You're ready. Create your company and configure it:
 
 ```bash
 mkdir ~/my-company && cd ~/my-company
-bash ~/ralphclip/setup.sh
+bash ~/ralphclip/setup.sh                    # scaffold Fossil repo (always first)
+cd workspace
 
-# After setup, verify all configured agents are reachable:
+# Then pick ONE of these to configure agents, skills, and budgets:
+rexx ~/ralphclip/setup-wizard.rex            # interactive wizard (no AI needed)
+# OR
+bash ~/ralphclip/plan.sh                     # Claude-powered planning session
+
+# Verify and run:
 rexx ~/ralphclip/orchestrate.rex --preflight
-
-# Preview what would run (no money spent):
 rexx ~/ralphclip/orchestrate.rex --dry-run
+rexx ~/ralphclip/orchestrate.rex
 ```
+
+Later, add projects and agents without touching existing config:
+
+```bash
+rexx ~/ralphclip/add-project.rex             # add a new project
+rexx ~/ralphclip/add-agent.rex               # add a new agent
+```
+
+See the [Tutorial](docs/TUTORIAL.md) for a full walkthrough.

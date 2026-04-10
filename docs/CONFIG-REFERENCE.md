@@ -74,7 +74,9 @@ max_iterations = 5                   # Ralph loop iterations per ticket
 log_dir = "runs"                     # run log directory (unversioned)
 ```
 
-## CLI Flags
+## CLI Tools
+
+### Orchestration
 
 ```bash
 rexx orchestrate.rex [company.toml] [--dry-run] [--preflight]
@@ -84,6 +86,22 @@ rexx orchestrate.rex [company.toml] [--dry-run] [--preflight]
 |------|-------------|
 | `--preflight` | Verify all agent runtimes (binary availability), API keys, script paths, and working directories. Exits with error count as return code. Run this after setup or config changes. |
 | `--dry-run` | Run full candidate discovery, wave scheduling, prompt building, and budget checks. Prints the dispatch plan without executing adapters or spending money. Claimed tickets are released back to open. |
+
+### Setup & Configuration
+
+| Command | Purpose |
+|---------|---------|
+| `bash setup.sh` | Bootstrap a new Fossil repo + minimal workspace. Always run first. |
+| `rexx setup-wizard.rex` | Interactive full company setup — agents, skills, budgets, gates. No AI needed. |
+| `bash plan.sh` | Claude-powered planning session — Claude designs your org conversationally. |
+
+### Day-to-Day Management
+
+| Command | Purpose |
+|---------|---------|
+| `rexx add-project.rex [company.toml]` | Add a project to an existing company. Appends to company.toml, seeds wiki pages, optionally assigns agents. |
+| `rexx add-agent.rex [company.toml]` | Add an agent to an existing company. Interactive skill browser, runtime detection, budget, triggers. |
+| `rexx review.rex [command]` | Human review queue — list, apply, approve, requeue. See [Governance](GOVERNANCE.md). |
 
 ## agents/<n>.toml
 

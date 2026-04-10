@@ -2,6 +2,12 @@
 
 This tutorial walks you through setting up a small WordPress plugin development company with three AI agents, a linter, and a test runner. By the end you will have a working orchestration loop that decomposes goals, writes code, runs quality checks, and logs everything to Fossil.
 
+> **Quick-path alternatives:** This tutorial shows the manual step-by-step process so you understand how everything fits together. For faster setup:
+> - `bash setup.sh` + `rexx setup-wizard.rex` — interactive wizard, no AI needed
+> - `bash setup.sh` + `bash plan.sh` — Claude designs your entire org conversationally
+>
+> See the [README](../README.md#quick-start) for details.
+
 ## Prerequisites
 
 Make sure you have installed:
@@ -330,8 +336,9 @@ Your browser opens to a page showing:
 
 ## Next Steps
 
-- Add more agents (QA reviewer, tech writer, metrics analyst)
-- Add more projects to `company.toml`
+- **Add a project:** `rexx /path/to/ralphclip/add-project.rex` — interactive, appends to existing config
+- **Add an agent:** `rexx /path/to/ralphclip/add-agent.rex` — interactive, with skill browser and runtime detection
+- Browse the [Skills Library](../skills/README.md) — 26 reusable skills across marketing, WordPress, Vue/PWA, and general development
 - Write ooRexx agents for custom analysis — see [Creating ooRexx Agents](CREATING-AGENTS.md)
 - Set up a cron job: `0 6 * * 1-5 cd ~/my-plugin-co/workspace && rexx /path/to/ralphclip/orchestrate.rex >> /var/log/ralphclip.log 2>&1`
 - Access remotely via Tailscale: `fossil ui --port 8080` on your server, browse from phone
