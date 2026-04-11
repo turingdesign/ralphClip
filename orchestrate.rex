@@ -73,8 +73,9 @@ notifyFile      = .TomlParser~get(config, 'governance.escalation.notification_fi
 /* Run ID — ISO 8601 compact format for tracing */
 isoTs = .FossilHelper~isoTimestampCompact()
 runId = 'run-'isoTs
+logDir = .FossilHelper~shellSafeStrict(logDir)
 runDir = logDir'/'runId
-ADDRESS SYSTEM 'mkdir -p' runDir
+ADDRESS SYSTEM 'mkdir -p "' || runDir || '"'
 
 SAY '================================================================'
 SAY ' RalphClip v'RALPHCLIP_VERSION '—' companyName
@@ -242,7 +243,7 @@ END
 companySpent = mutex~readBudgetSpent()
 CALL logGov 'RUN START', 'all', 'orchestrate.rex triggered'
 
-IF companySpent >= companyCap THEN DO
+IF companyCap > 0 & companySpent >= companyCap THEN DO
    CALL logGov 'BUDGET HALT', 'all', -
       'Company ceiling reached:' companySpent '/' companyCap
    SAY '[BUDGET] Company budget exhausted:' companySpent '/' companyCap
