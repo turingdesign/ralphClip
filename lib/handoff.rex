@@ -43,7 +43,8 @@
            outputFiles, recordCount, confidence, summary, ,
            schema, validationRules, onFailure, handoffsDir, sourceTicketId
 
-   ADDRESS SYSTEM 'mkdir -p' handoffsDir
+   handoffsDir = .FossilHelper~shellSafeStrict(handoffsDir)
+   ADDRESS SYSTEM 'mkdir -p "' || handoffsDir || '"'
 
    timestamp  = .FossilHelper~isoTimestamp()
    compactTs  = .FossilHelper~isoTimestampCompact()

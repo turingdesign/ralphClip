@@ -38,6 +38,9 @@
 ::METHOD init
    EXPOSE runtime model workingDir scriptPath ticketId skipPermissions
    USE ARG runtime, model, workingDir
+   /* Sanitise paths to prevent injection inside double-quoted shell args */
+   workingDir = .FossilHelper~shellSafe(workingDir)
+   model = .FossilHelper~shellSafe(model)
    scriptPath = ''
    ticketId = ''
    skipPermissions = 0
@@ -45,6 +48,7 @@
 ::METHOD 'scriptPath='
    EXPOSE scriptPath
    USE ARG scriptPath
+   scriptPath = .FossilHelper~shellSafe(scriptPath)
 
 ::METHOD 'ticketId='
    EXPOSE ticketId
@@ -176,7 +180,7 @@
    permFlag = ''
    IF skipPermissions THEN permFlag = '--dangerously-skip-permissions'
 
-   cmdLine = 'cd' workingDir '&&' -
+   cmdLine = 'cd "' || workingDir || '" &&' -
              'claude -p' -
              '--model "' || model || '"' -
              permFlag -
@@ -202,7 +206,7 @@
 
    tmpFile = self~writeTempPrompt(prompt)
 
-   cmdLine = 'cd' workingDir '&&' -
+   cmdLine = 'cd "' || workingDir || '" &&' -
              'vibe --prompt-file' tmpFile -
              '--max-turns 50' -
              '--max-price 0.50' -
@@ -228,7 +232,7 @@
 
    tmpFile = self~writeTempPrompt(prompt)
 
-   cmdLine = 'cd' workingDir '&&' -
+   cmdLine = 'cd "' || workingDir || '" &&' -
              'gemini --yolo' -
              '<' tmpFile -
              '2>&1'
@@ -260,7 +264,7 @@
       OTHERWISE orModel = 'arcee-ai/' || model
    END
 
-   cmdLine = 'cd' workingDir '&&' -
+   cmdLine = 'cd "' || workingDir || '" &&' -
       'printf "header = \\"Authorization: Bearer %s\\"" "$OPENROUTER_API_KEY"' -
       '>' tmpFile'.hdr &&' -
       'curl -s https://openrouter.ai/api/v1/chat/completions' -
@@ -338,7 +342,7 @@
    CALL VALUE 'RALPHCLIP_WORKING_DIR', workingDir, 'ENVIRONMENT'
    CALL VALUE 'RALPHCLIP_TICKET_ID', ticketId, 'ENVIRONMENT'
 
-   cmdLine = 'cd' workingDir '&& bash "' || scriptPath || '" 2>&1'
+   cmdLine = 'cd "' || workingDir || '" && bash "' || scriptPath || '" 2>&1'
    cmdLine = 'timeout 120' cmdLine
 
    CALL TIME 'R'
@@ -373,7 +377,7 @@
    CALL VALUE 'RALPHCLIP_TICKET_ID', ticketId, 'ENVIRONMENT'
    CALL VALUE 'RALPHCLIP_PROMPT', prompt, 'ENVIRONMENT'
 
-   cmdLine = 'cd' workingDir '&& rexx "' || scriptPath || '" 2>&1'
+   cmdLine = 'cd "' || workingDir || '" && rexx "' || scriptPath || '" 2>&1'
    cmdLine = 'timeout 120' cmdLine
 
    CALL TIME 'R'

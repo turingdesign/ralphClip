@@ -30,7 +30,8 @@
    USE ARG taskName, attempts, finalAdapter, errorClass, errorMessage, ,
            attemptLog, taskConfig, lastError, parkedDir
 
-   ADDRESS SYSTEM 'mkdir -p' parkedDir
+   parkedDir = .FossilHelper~shellSafeStrict(parkedDir)
+   ADDRESS SYSTEM 'mkdir -p "' || parkedDir || '"'
 
    timestamp  = .FossilHelper~isoTimestamp()
    compactTs  = .FossilHelper~isoTimestampCompact()

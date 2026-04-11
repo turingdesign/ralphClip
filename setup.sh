@@ -40,7 +40,7 @@ for cmd in claude vibe gemini; do
     fi
 done
 # Trinity uses OpenRouter API — no binary needed
-if [ -n "$OPENROUTER_API_KEY" ]; then
+if [ -n "${OPENROUTER_API_KEY:-}" ]; then
     echo "  trinity (OpenRouter): key set"
     AI_FOUND=1
 fi
@@ -57,6 +57,31 @@ read -p "Monthly budget (USD): " BUDGET
 read -p "First project code (e.g., myplugin): " PROJECT_CODE
 read -p "First project working directory: " PROJECT_DIR
 read -p "First project goal (one sentence): " PROJECT_GOAL
+
+# Sanitise inputs to prevent TOML injection and shell metacharacter issues
+# Strip double quotes, backslashes, backticks, semicolons, and newlines
+sanitise() { printf '%s' "$1" | tr -d '"\\`;\n\r$' | head -c 200; }
+COMPANY_NAME="$(sanitise "$COMPANY_NAME")"
+PROJECT_GOAL="$(sanitise "$PROJECT_GOAL")"
+
+# Project code: alphanumeric, hyphens, underscores only
+PROJECT_CODE="$(printf '%s' "$PROJECT_CODE" | tr -cd 'a-zA-Z0-9_-' | head -c 50)"
+if [ -z "$PROJECT_CODE" ]; then
+    echo "ERROR: Project code must contain at least one alphanumeric character."
+    exit 1
+fi
+
+# Budget: must be a number
+if ! printf '%s' "$BUDGET" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+    echo "ERROR: Budget must be a number (e.g., 50.00)"
+    exit 1
+fi
+
+# Project dir: reject path traversal
+if printf '%s' "$PROJECT_DIR" | grep -q '\.\.'; then
+    echo "ERROR: Project directory must not contain '..'"
+    exit 1
+fi
 
 echo ""
 echo "Setting up: $COMPANY_NAME"

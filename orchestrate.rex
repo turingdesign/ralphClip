@@ -70,6 +70,12 @@ maxFailures     = .TomlParser~get(config, 'governance.escalation.max_consecutive
 notifyFile      = .TomlParser~get(config, 'governance.escalation.notification_file', -
                   '/tmp/ralphclip-escalation.txt')
 
+/* Reject path traversal in notifyFile */
+IF POS('..', notifyFile) > 0 THEN DO
+   SAY '[SECURITY] notification_file contains "..". Using default.'
+   notifyFile = '/tmp/ralphclip-escalation.txt'
+END
+
 /* Run ID — ISO 8601 compact format for tracing */
 isoTs = .FossilHelper~isoTimestampCompact()
 runId = 'run-'isoTs
@@ -97,6 +103,7 @@ CALL safetyInit runDir, tracer
 
 /* Fossil mutex for concurrent access */
 mutex = .FossilMutex~new()
+.environment~put(mutex, 'RALPHCLIP.MUTEX')
 
 /*--------------------------------------------------------------------*/
 /* Extended preflight: verify all agent runtimes and working dirs      */
@@ -740,7 +747,11 @@ writeHandoff: PROCEDURE
       'Handoff written:' taskName '→ next ('filePath')'
 
    handoffMsg = '[handoff] task:'taskName 'run:'runId
-   CALL .FossilHelper~commitAll handoffMsg
+   gmutex = .environment~at('RALPHCLIP.MUTEX')
+   IF gmutex \= .nil THEN
+      gmutex~commitAll(handoffMsg)
+   ELSE
+      CALL .FossilHelper~commitAll handoffMsg
    RETURN
 
 /*--------------------------------------------------------------------*/
@@ -832,7 +843,11 @@ injectHandoffContext: PROCEDURE
 logGov: PROCEDURE
    PARSE ARG event, project, details
    entry = DATE('S') TIME() '|' event '|' project '|' details
-   CALL .FossilHelper~wikiAppend 'GovernanceLog', entry
+   gmutex = .environment~at('RALPHCLIP.MUTEX')
+   IF gmutex \= .nil THEN
+      gmutex~wikiAppend('GovernanceLog', entry)
+   ELSE
+      CALL .FossilHelper~wikiAppend 'GovernanceLog', entry
    RETURN
 
 requiresApproval: PROCEDURE
@@ -961,7 +976,11 @@ checkEscalation: PROCEDURE EXPOSE maxFailures notifyFile runDir
          tid = STRIP(tid)
          tTitle = STRIP(tTitle)
 
-         CALL .FossilHelper~ticketChange tid, 'status=escalated'
+         gmutex = .environment~at('RALPHCLIP.MUTEX')
+         IF gmutex \= .nil THEN
+            gmutex~ticketChange(tid, 'status=escalated')
+         ELSE
+            CALL .FossilHelper~ticketChange tid, 'status=escalated'
 
          /* Write an escalation document for each ticket */
          escalFile = .EscalationWriter~write( -
@@ -975,8 +994,12 @@ checkEscalation: PROCEDURE EXPOSE maxFailures notifyFile runDir
       END
       SAY '['agentName'] All open tickets moved to escalated status.'
 
-      CALL .FossilHelper~commitAll -
-         '[escalation] agent:'agentName 'suspended after' consecutiveFails 'failures'
+      gmutex = .environment~at('RALPHCLIP.MUTEX')
+      IF gmutex \= .nil THEN
+         gmutex~commitAll('[escalation] agent:'agentName 'suspended after' consecutiveFails 'failures')
+      ELSE
+         CALL .FossilHelper~commitAll -
+            '[escalation] agent:'agentName 'suspended after' consecutiveFails 'failures'
    END
    RETURN
 
@@ -1094,7 +1117,11 @@ createStoriesFromOutput: PROCEDURE
       IF acceptance \= '' THEN
          fields = fields 'acceptance="'acceptance'"'
 
-      CALL .FossilHelper~ticketAdd title, fields
+      gmutex = .environment~at('RALPHCLIP.MUTEX')
+      IF gmutex \= .nil THEN
+         gmutex~ticketAdd(title, fields)
+      ELSE
+         CALL .FossilHelper~ticketAdd title, fields
       SAY '[stories] Created:' title '→' assignee
       created = created + 1
 
@@ -1144,7 +1171,11 @@ createStoriesFromOutput: PROCEDURE
       END
 
       IF resolvedDeps \= '' THEN DO
-         CALL .FossilHelper~ticketChange ticketId, 'depends="'resolvedDeps'"'
+         gmutex = .environment~at('RALPHCLIP.MUTEX')
+         IF gmutex \= .nil THEN
+            gmutex~ticketChange(ticketId, 'depends="'resolvedDeps'"')
+         ELSE
+            CALL .FossilHelper~ticketChange ticketId, 'depends="'resolvedDeps'"'
          SAY '[stories] Resolved dependencies for ticket' ticketId
       END
    END
@@ -1197,7 +1228,11 @@ createTicketsFromOutput: PROCEDURE
 
       IF title \= '' & assignee \= '' THEN DO
          fields = 'assignee='assignee 'project='projCode 'status=open type=fix'
-         CALL .FossilHelper~ticketAdd title, fields
+         gmutex = .environment~at('RALPHCLIP.MUTEX')
+         IF gmutex \= .nil THEN
+            gmutex~ticketAdd(title, fields)
+         ELSE
+            CALL .FossilHelper~ticketAdd title, fields
          SAY '[tickets] Created fix ticket:' title '→' assignee
       END
 
@@ -1213,7 +1248,11 @@ createTicketsFromOutput: PROCEDURE
 updateLearnings: PROCEDURE
    PARSE ARG agentName, output
    entry = DATE('S') '- Completed a task successfully.'
-   CALL .FossilHelper~wikiAppend 'AgentLearnings/'agentName, entry
+   gmutex = .environment~at('RALPHCLIP.MUTEX')
+   IF gmutex \= .nil THEN
+      gmutex~wikiAppend('AgentLearnings/'agentName, entry)
+   ELSE
+      CALL .FossilHelper~wikiAppend 'AgentLearnings/'agentName, entry
    RETURN
 
 /*--------------------------------------------------------------------*/

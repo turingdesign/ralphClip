@@ -152,11 +152,7 @@
 ::METHOD readBudgetSpent GUARDED
    page = .FossilHelper~wikiExport('Budget')
    IF page = '' THEN RETURN 0
-   spentPos = POS('spent:', page)
-   IF spentPos = 0 THEN RETURN 0
-   PARSE VAR page . 'spent:' spent .
-   IF DATATYPE(STRIP(spent), 'N') THEN RETURN STRIP(spent)
-   RETURN 0
+   RETURN self~readLineValue(page, 'spent:')
 
 ::METHOD readProjectSpend GUARDED
    USE ARG projCode

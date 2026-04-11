@@ -40,8 +40,13 @@
 
       /* Handle multi-line strings (triple-quote) */
       IF inMultiline THEN DO
-         IF POS('"""', stripped) > 0 THEN DO
-            PARSE VAR stripped before '"""' .
+         /* Close multi-line only when """ is the entire line or ends the line.
+            This prevents premature closure when """ appears mid-content. */
+         IF stripped = '"""' | RIGHT(stripped, 3) = '"""' THEN DO
+            IF stripped = '"""' THEN
+               before = ''
+            ELSE
+               before = LEFT(stripped, LENGTH(stripped) - 3)
             multilineVal = multilineVal || before
             fullKey = currentSection || '.' || multilineKey
             IF LEFT(fullKey, 1) = '.' THEN fullKey = SUBSTR(fullKey, 2)
@@ -67,9 +72,20 @@
       rawVal = STRIP(SUBSTR(stripped, eqPos + 1))
 
       /* Strip inline comments (not inside quotes) */
+      /* TOML spec: inline comments must be preceded by whitespace */
       IF LEFT(rawVal, 1) \= '"' & LEFT(rawVal, 1) \= '[' THEN DO
-         commentPos = POS('#', rawVal)
-         IF commentPos > 0 THEN rawVal = STRIP(LEFT(rawVal, commentPos - 1))
+         /* Scan for ' #' or tab+'#' pattern — not bare '#' mid-word */
+         commentPos = 0
+         DO ci = 2 TO LENGTH(rawVal)
+            IF SUBSTR(rawVal, ci, 1) = '#' THEN DO
+               prevChar = SUBSTR(rawVal, ci - 1, 1)
+               IF prevChar = ' ' | prevChar = '09'x THEN DO
+                  commentPos = ci - 1  /* trim from the whitespace */
+                  LEAVE
+               END
+            END
+         END
+         IF commentPos > 0 THEN rawVal = STRIP(LEFT(rawVal, commentPos))
       END
 
       /* Determine value type and parse */

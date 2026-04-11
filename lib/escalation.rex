@@ -46,7 +46,8 @@
            attemptLog, lastResult, prompt, runId, reason, escalDir
 
    IF escalDir = '' THEN escalDir = 'escalations'
-   ADDRESS SYSTEM 'mkdir -p' escalDir
+   escalDir = .FossilHelper~shellSafeStrict(escalDir)
+   ADDRESS SYSTEM 'mkdir -p "' || escalDir || '"'
 
    timestamp = .FossilHelper~isoTimestamp()
    compactTs = .FossilHelper~isoTimestampCompact()
