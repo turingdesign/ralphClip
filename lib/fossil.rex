@@ -162,7 +162,7 @@
    USE ARG title, fields
    title = .FossilHelper~shellSafe(title)
    fields = .FossilHelper~shellSafe(fields)
-   cmd = 'fossil ticket add title="'title'"' fields '2>/dev/null'
+   cmd = 'fossil ticket add title="' || title || '"' fields '2>/dev/null'
    ADDRESS SYSTEM cmd
    RETURN
 
@@ -173,7 +173,7 @@
    USE ARG ticketId, fields
    ticketId = .FossilHelper~shellSafe(ticketId)
    fields = .FossilHelper~shellSafe(fields)
-   cmd = 'fossil ticket change' ticketId fields '2>/dev/null'
+   cmd = 'fossil ticket change "' || ticketId || '"' fields '2>/dev/null'
    ADDRESS SYSTEM cmd
    RETURN
 

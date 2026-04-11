@@ -442,6 +442,9 @@ DO p = 1 TO projectSections~items
 
          CALL logGov 'DISPATCHED', projCode, -
             agentName '→ "'ticketTitle'" [wave' w']'
+         IF c['skipPermissions'] = 1 THEN
+            CALL logGov 'SECURITY WARNING', projCode, -
+               agentName 'dispatched with skip_permissions=true'
          SAY '['agentName'] Queued:' ticketTitle
          totalDispatched = totalDispatched + 1
          tracer~countTask('ok')
@@ -946,7 +949,8 @@ checkEscalation: PROCEDURE EXPOSE maxFailures notifyFile runDir
       CALL STREAM notifyFile, 'C', 'CLOSE'
 
       /* Escalate all open tickets for this agent, writing escalation docs */
-      ADDRESS SYSTEM 'fossil ticket list assignee="'agentName'" status=open' -
+      safeAgent = .FossilHelper~shellSafe(agentName)
+      ADDRESS SYSTEM 'fossil ticket list assignee="' || safeAgent || '" status=open' -
          '--format "%u|%t" 2>/dev/null' WITH OUTPUT STEM openTix.
       emptyLog = .Array~new
       DO t = 1 TO openTix.0

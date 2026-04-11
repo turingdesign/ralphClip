@@ -1,0 +1,25 @@
+# Test fixture for TOML parser edge cases
+
+[company]
+name = "Test Co"
+monthly_budget_usd = 50.00
+active = true
+disabled = false
+
+[projects.alpha]
+budget_usd = 25
+working_dir = "~/code/alpha"
+agents = ["cto", "engineer", "qa"]
+
+[projects.beta]
+budget_usd = 10
+working_dir = "/opt/beta"
+agents = ["engineer"]
+
+[flat]
+simple_number = 42
+float_number = 3.14
+bare_string = hello
+quoted_string = "world"
+inline_comment = 100  # this is a comment
+array_numbers = [1, 2, 3]

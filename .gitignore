@@ -1,0 +1,15 @@
+# RalphClip transient output directories (created during testing/development)
+runs/
+traces/
+parked_tasks/
+handoffs/
+escalations/
+debug/
+
+# Temp files
+/tmp/
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db

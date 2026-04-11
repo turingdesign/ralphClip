@@ -103,7 +103,10 @@
    page = self~updateBudgetLine(page, 'spent:', cost)
    page = self~updateBudgetLine(page, projCode':', cost)
 
-   IF POS(agentName':', page) = 0 THEN
+   /* Check for agent line at a line boundary (not a substring match) */
+   nlAgent = '0a'x || agentName || ':'
+   agentAtStart = (LEFT(page, LENGTH(agentName || ':')) = agentName || ':')
+   IF POS(nlAgent, page) = 0 & \agentAtStart THEN
       page = page || agentName':' FORMAT(cost,,4) || '0a'x
    ELSE
       page = self~updateBudgetLine(page, agentName':', cost)
@@ -113,11 +116,25 @@
 
 /*--------------------------------------------------------------------*/
 /* updateBudgetLine — find a "label: N" line and add cost to N         */
+/* Anchored to line boundaries: matches marker only at start of a     */
+/* line (or start of string) to prevent substring collisions          */
+/* e.g., "qa:" must not match inside "qa-lead:".                      */
 /*--------------------------------------------------------------------*/
 ::METHOD updateBudgetLine PRIVATE
    USE ARG page, marker, addCost
-   pos = POS(marker, page)
-   IF pos = 0 THEN RETURN page
+
+   /* Try line-anchored match: newline immediately before marker */
+   nlMarker = '0a'x || marker
+   pos = POS(nlMarker, page)
+   IF pos > 0 THEN
+      pos = pos + 1  /* skip the newline, point at marker */
+   ELSE DO
+      /* Check if marker is at the very start of the page */
+      IF LEFT(page, LENGTH(marker)) = marker THEN
+         pos = 1
+      ELSE
+         RETURN page  /* marker not found at a line boundary */
+   END
 
    before = LEFT(page, pos - 1)
    chunk = SUBSTR(page, pos + LENGTH(marker))
@@ -144,20 +161,33 @@
 ::METHOD readProjectSpend GUARDED
    USE ARG projCode
    page = .FossilHelper~wikiExport('Budget')
-   marker = projCode || ':'
-   pos = POS(marker, page)
-   IF pos = 0 THEN RETURN 0
-   chunk = SUBSTR(page, pos + LENGTH(marker))
-   PARSE VAR chunk spent .
-   IF DATATYPE(STRIP(spent), 'N') THEN RETURN STRIP(spent)
-   RETURN 0
+   RETURN self~readLineValue(page, projCode || ':')
 
 ::METHOD readAgentSpend GUARDED
    USE ARG agentName
    page = .FossilHelper~wikiExport('Budget')
-   marker = agentName || ':'
-   pos = POS(marker, page)
-   IF pos = 0 THEN RETURN 0
+   RETURN self~readLineValue(page, agentName || ':')
+
+/*--------------------------------------------------------------------*/
+/* readLineValue — find a line-anchored "marker N" and return N        */
+/* Returns 0 if marker not found at a line boundary.                  */
+/*--------------------------------------------------------------------*/
+::METHOD readLineValue PRIVATE
+   USE ARG page, marker
+   IF page = '' THEN RETURN 0
+
+   /* Try newline-anchored match first */
+   nlMarker = '0a'x || marker
+   pos = POS(nlMarker, page)
+   IF pos > 0 THEN
+      pos = pos + 1
+   ELSE DO
+      IF LEFT(page, LENGTH(marker)) = marker THEN
+         pos = 1
+      ELSE
+         RETURN 0
+   END
+
    chunk = SUBSTR(page, pos + LENGTH(marker))
    PARSE VAR chunk spent .
    IF DATATYPE(STRIP(spent), 'N') THEN RETURN STRIP(spent)

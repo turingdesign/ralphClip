@@ -99,7 +99,20 @@ echo ""
 
 # Create directory structure
 echo "Creating directory structure..."
-mkdir -p agents skills scripts runs
+mkdir -p agents skills scripts runs parked_tasks handoffs traces escalations debug
+
+# Configure Fossil to ignore transient output directories
+echo "Configuring ignore-glob..."
+mkdir -p .fossil-settings
+cat > .fossil-settings/ignore-glob << 'IGNORES'
+runs/*
+traces/*
+parked_tasks/*
+handoffs/*
+escalations/*
+debug/*
+/tmp/ralphclip-escalation.txt
+IGNORES
 
 # Write company.toml
 echo "Writing company.toml..."
