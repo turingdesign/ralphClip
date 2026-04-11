@@ -1,0 +1,25 @@
+# Minimal company config for integration testing
+# No real API keys or runtimes needed — uses script adapter only
+
+[company]
+name = "TestCo"
+monthly_budget_usd = 100.00
+
+[orchestrator]
+max_iterations = 2
+log_dir = "runs"
+
+[governance]
+require_approval = ""
+
+[governance.escalation]
+max_consecutive_failures = 3
+notification_file = "/tmp/ralphclip-test-escalation.txt"
+
+[projects.testproj]
+working_dir = "."
+budget_usd = 50.00
+context_wiki = ""
+
+[governance.gates.code]
+pipeline = ""

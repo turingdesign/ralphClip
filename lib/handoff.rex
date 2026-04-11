@@ -41,7 +41,7 @@
 ::METHOD write CLASS
    USE ARG sourceTask, targetTask, adapter, fossilRef, runId, ,
            outputFiles, recordCount, confidence, summary, ,
-           schema, validationRules, onFailure, handoffsDir
+           schema, validationRules, onFailure, handoffsDir, sourceTicketId
 
    ADDRESS SYSTEM 'mkdir -p' handoffsDir
 
@@ -54,6 +54,7 @@
    IF onFailure = '' THEN onFailure = 'park'
    IF confidence = '' THEN confidence = 'N/A'
    IF recordCount = '' | \DATATYPE(recordCount, 'W') THEN recordCount = 0
+   IF ARG(15, 'O') | sourceTicketId = '' THEN sourceTicketId = 'N/A'
 
    /* Build the handoff document */
    doc = '# Handoff:' sourceTask '→' targetTask || '0a'x
@@ -62,6 +63,7 @@
    /* Provenance section */
    doc = doc || '## Provenance' || '0a'x
    doc = doc || '- **Source task**:' sourceTask || '0a'x
+   doc = doc || '- **Source ticket**:' sourceTicketId || '0a'x
    doc = doc || '- **Source adapter**:' adapter || '0a'x
    doc = doc || '- **Fossil ref**:' fossilRef || '0a'x
    doc = doc || '- **Timestamp**:' timestamp || '0a'x
@@ -116,8 +118,9 @@
    USE ARG filePath
 
    ho = .Directory~new
-   ho['source_task']    = ''
-   ho['source_adapter'] = ''
+   ho['source_task']      = ''
+   ho['source_ticket_id'] = ''
+   ho['source_adapter']   = ''
    ho['fossil_ref']     = ''
    ho['timestamp']      = ''
    ho['run_id']         = ''
@@ -136,8 +139,9 @@
    CALL STREAM filePath, 'C', 'CLOSE'
 
    /* Extract fields using the Markdown bold-label pattern */
-   ho['source_task']    = self~extractMdField(content, 'Source task')
-   ho['source_adapter'] = self~extractMdField(content, 'Source adapter')
+   ho['source_task']      = self~extractMdField(content, 'Source task')
+   ho['source_ticket_id'] = self~extractMdField(content, 'Source ticket')
+   ho['source_adapter']   = self~extractMdField(content, 'Source adapter')
    ho['fossil_ref']     = self~extractMdField(content, 'Fossil ref')
    ho['timestamp']      = self~extractMdField(content, 'Timestamp')
    ho['run_id']         = self~extractMdField(content, 'Trace run ID')

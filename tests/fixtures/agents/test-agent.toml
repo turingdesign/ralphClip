@@ -1,0 +1,10 @@
+# Test agent — uses 'script' runtime so no LLM binary is needed
+runtime = "script"
+script = "scripts/test-noop.sh"
+role = "test-agent"
+projects = "testproj"
+budget_usd = 10.00
+trigger = "ticket"
+skill = ""
+max_retries = 1
+fail_action = "park"

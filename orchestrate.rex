@@ -11,7 +11,9 @@
 /* Usage: rexx orchestrate.rex [company_toml_path]                     */
 /*--------------------------------------------------------------------*/
 
-SIGNAL ON HALT NAME cleanup
+SIGNAL ON HALT   NAME cleanup
+SIGNAL ON ERROR  NAME errorHandler
+SIGNAL ON SYNTAX NAME syntaxHandler
 
 RALPHCLIP_VERSION = '2.1.0'
 
@@ -30,6 +32,7 @@ CALL (ralphclipHome'/lib/mutex.rex')
 CALL (ralphclipHome'/lib/worker.rex')
 CALL (ralphclipHome'/lib/scheduler.rex')
 CALL (ralphclipHome'/adapters.rex')
+CALL (ralphclipHome'/lib/safety.rex')
 
 /*--------------------------------------------------------------------*/
 /* Preflight checks                                                    */
@@ -87,6 +90,9 @@ tracer = .TraceWriter~new(runId, 'traces', costTable, RALPHCLIP_VERSION)
 tracer~start()
 tracer~span('orchestrator.init', '', .FossilHelper~isoTimestamp(), -
             0, 0, 0, 'ok', '', '', 'Loaded config, initialised tracer')
+
+/* Register crash handler globals */
+CALL safetyInit runDir, tracer
 
 /* Fossil mutex for concurrent access */
 mutex = .FossilMutex~new()
@@ -554,7 +560,7 @@ DO p = 1 TO projectSections~items
                CALL resetEscalation agentName
                completedAgents = completedAgents agentName
                totalCompleted = totalCompleted + 1
-               CALL writeHandoff ticketTitle, agentName, adapterUsed, -
+               CALL writeHandoff ticketTitle, ticketId, agentName, adapterUsed, -
                   'post-success:'taskSafeName, runId, projCode
             END
             ELSE DO
@@ -708,7 +714,7 @@ parkTask: PROCEDURE
 /* writeHandoff — create a handoff document after successful task      */
 /*--------------------------------------------------------------------*/
 writeHandoff: PROCEDURE
-   PARSE ARG taskName, agentName, adapterName, fossilRef, runId, projCode
+   PARSE ARG taskName, ticketId, agentName, adapterName, fossilRef, runId, projCode
 
    filePath = .HandoffWriter~write( -
       taskName, -           /* sourceTask */
@@ -723,7 +729,8 @@ writeHandoff: PROCEDURE
       '', -                 /* schema */
       '', -                 /* validationRules */
       'park', -             /* onFailure */
-      'handoffs')           /* directory */
+      'handoffs', -         /* directory */
+      ticketId)             /* sourceTicketId */
 
    CALL logGov 'HANDOFF', projCode, -
       'Handoff written:' taskName '→ next ('filePath')'
@@ -735,9 +742,8 @@ writeHandoff: PROCEDURE
 /*--------------------------------------------------------------------*/
 /* injectHandoffContext — inject handoffs from upstream dependencies   */
 /*                                                                     */
-/* Only injects handoffs whose source task matches one of this         */
-/* ticket's dependency tickets. Resolves dep ticket IDs to task        */
-/* titles, then matches against handoff filenames and source_task.    */
+/* Matches handoffs by source_ticket_id (primary) or source_task      */
+/* title (legacy fallback for handoffs created before this change).   */
 /*--------------------------------------------------------------------*/
 injectHandoffContext: PROCEDURE
    PARSE ARG ticketId, deps, prompt
@@ -745,21 +751,20 @@ injectHandoffContext: PROCEDURE
    /* No dependencies = no upstream handoffs to inject */
    IF deps = '' THEN RETURN prompt
 
-   /* Resolve dependency ticket IDs to task titles */
-   upstreamTasks = ''
+   /* Build space-delimited list of dependency ticket IDs */
+   depIds = ''
    remaining = deps
    DO WHILE remaining \= ''
       PARSE VAR remaining dep ',' remaining
       dep = STRIP(dep)
       IF dep = '' THEN ITERATE
-      /* Look up the title of the dependency ticket */
-      depTitle = .FossilHelper~ticketField(dep, 'title')
-      IF depTitle \= '' THEN
-         upstreamTasks = upstreamTasks || depTitle || '0a'x
+      depIds = depIds dep
    END
-   IF upstreamTasks = '' THEN RETURN prompt
+   depIds = STRIP(depIds)
 
-   /* Scan handoff files, only inject those from upstream tasks */
+   IF depIds = '' THEN RETURN prompt
+
+   /* Scan handoff files, match on source_ticket_id */
    ADDRESS SYSTEM 'ls handoffs/*.md 2>/dev/null' WITH OUTPUT STEM hfiles.
    IF hfiles.0 = 0 THEN RETURN prompt
 
@@ -770,17 +775,33 @@ injectHandoffContext: PROCEDURE
       IF hfile = '' THEN ITERATE
 
       ho = .HandoffReader~parse(hfile)
-      sourceTask = ho['source_task']
+      sourceTicketId = ho['source_ticket_id']
 
-      /* Check if this handoff's source task is one of our dependencies */
-      IF POS(sourceTask, upstreamTasks) = 0 THEN ITERATE
+      /* Fall back to title matching if handoff predates this change */
+      IF sourceTicketId = '' | sourceTicketId = 'N/A' THEN DO
+         sourceTask = ho['source_task']
+         /* Legacy path: resolve dep IDs to titles and match */
+         matched = 0
+         DO d = 1 TO WORDS(depIds)
+            depTitle = .FossilHelper~ticketField(WORD(depIds, d), 'title')
+            IF depTitle \= '' & POS(sourceTask, depTitle) > 0 THEN DO
+               matched = 1
+               LEAVE
+            END
+         END
+         IF \matched THEN ITERATE
+      END
+      ELSE DO
+         /* Primary path: match by ticket ID */
+         IF WORDPOS(sourceTicketId, depIds) = 0 THEN ITERATE
+      END
 
       /* Validate before injecting */
       valResult = .HandoffReader~validate(ho)
 
       IF valResult['ok'] THEN DO
          prompt = prompt || '0a'x
-         prompt = prompt || '--- HANDOFF FROM: 'sourceTask' ---' || '0a'x
+         prompt = prompt || '--- HANDOFF FROM: 'ho['source_task']' ---' || '0a'x
          prompt = prompt || 'Summary:' ho['summary'] || '0a'x
          IF ho['output_files'] \= '' & ho['output_files'] \= 'N/A' THEN
             prompt = prompt || 'Output files:' ho['output_files'] || '0a'x
@@ -792,7 +813,7 @@ injectHandoffContext: PROCEDURE
       ELSE DO
          errors = valResult['errors']
          DO e = 1 TO errors~items
-            SAY '[handoff] Validation warning ('sourceTask'):' errors[e]
+            SAY '[handoff] Validation warning ('ho['source_task']'):' errors[e]
          END
       END
    END
@@ -1227,3 +1248,14 @@ cleanup:
    CALL logGov 'INTERRUPTED', 'all', 'Ctrl-C received'
    CALL .FossilHelper~commitAll 'interrupted run' DATE('S')
    EXIT 1
+
+/*--------------------------------------------------------------------*/
+/* SIGNAL ON ERROR / SYNTAX handlers                                   */
+/*--------------------------------------------------------------------*/
+errorHandler:
+   CALL safetyHandler 'ERROR'
+   EXIT 2
+
+syntaxHandler:
+   CALL safetyHandler 'SYNTAX'
+   EXIT 3
